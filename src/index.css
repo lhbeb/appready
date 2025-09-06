@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@font-face {
+  font-family: 'Britti';
+  src: url('/fonts/Britti-Sans-Variable.c95a2814.woff2') format('woff2'),
+       url('/fonts/4473ecc91f70f139-s.p.woff') format('woff'),
+       url('/fonts/463dafcda517f24f-s.p.woff') format('woff');
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@layer base {
+  html {
+    font-family: Britti, sans-serif;
+  }
+}
