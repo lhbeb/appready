@@ -1,7 +1,9 @@
 // =====================================================
 // Supabase Health Monitor - TypeScript Version
-// Auto-runs when imported
+// Auto-runs when imported (development only)
 // =====================================================
+
+import { supabase } from './supabase';
 
 export class SupabaseHealthMonitor {
     private supabase: any;
@@ -9,51 +11,26 @@ export class SupabaseHealthMonitor {
     private healthCheckInterval: NodeJS.Timeout | null = null;
 
     constructor() {
-        this.init();
+        // Only initialize in development mode
+        if (import.meta.env.DEV) {
+            this.init();
+        } else {
+            console.log('🔇 Supabase Health Monitor disabled in production');
+        }
     }
 
     private async init() {
         console.log('🚀 Initializing Supabase Health Monitor...');
         
         try {
-            // Wait for Supabase client to be available
-            await this.waitForSupabase();
+            // Use imported Supabase client directly
+            this.supabase = supabase;
             
             await this.testConnection();
             this.startHealthMonitoring();
             
         } catch (error) {
             console.error('❌ Failed to initialize monitor:', error);
-        }
-    }
-
-    private async waitForSupabase(): Promise<void> {
-        let attempts = 0;
-        const maxAttempts = 100; // Wait up to 10 seconds (increased from 5)
-        
-        console.log('⏳ Waiting for Supabase client to be available...');
-        
-        while (!window.supabase && attempts < maxAttempts) {
-            await new Promise(resolve => setTimeout(resolve, 100));
-            attempts++;
-            
-            // Log progress every 10 attempts
-            if (attempts % 10 === 0) {
-                console.log(`⏳ Still waiting... (${attempts}/100 attempts)`);
-            }
-        }
-        
-        if (window.supabase) {
-            this.supabase = window.supabase;
-            console.log('✅ Found Supabase client after', attempts, 'attempts');
-        } else {
-            console.error('❌ Supabase client not found after waiting');
-            console.error('🔍 Debug info:', {
-                windowKeys: Object.keys(window).filter(key => key.includes('supabase')),
-                hasSupabase: !!window.supabase,
-                attempts: attempts
-            });
-            throw new Error('Supabase client not found after waiting');
         }
     }
 
@@ -382,11 +359,15 @@ declare global {
     }
 }
 
-// Create global monitor instance
-const monitor = new SupabaseHealthMonitor();
-window.monitor = monitor;
+// Initialize monitor in development mode
+let monitor: SupabaseHealthMonitor | null = null;
 
-console.log(`
+if (import.meta.env.DEV) {
+    // Create global monitor instance
+    monitor = new SupabaseHealthMonitor();
+    window.monitor = monitor;
+
+    console.log(`
 🚀 SUPABASE HEALTH MONITOR AUTO-LOADED!
 
 Available commands:
@@ -404,5 +385,6 @@ monitor.runAllTests()
 
 Note: Now configured to use '9alwa' storage bucket
 `);
+}
 
 export default monitor;
