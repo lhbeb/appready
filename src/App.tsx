@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ArrowLeft, ChevronDown, CheckCircle2 } from 'lucide-react';
+import { ArrowLeft, ChevronDown, CheckCircle2, Camera, Loader2 } from 'lucide-react';
 import { supabase } from './lib/supabase';
 import { Toaster } from 'react-hot-toast';
 import FileUpload from './components/FileUpload';
@@ -547,7 +547,6 @@ Submission Date: ${new Date().toISOString()}
                       <label className="block text-sm font-medium text-gray-700 mb-2">Front of Driver's License</label>
                       <FileUpload
                         onFileAccepted={setFrontId}
-                        onFileRemoved={() => setFrontId(null)}
                         side="front"
                         file={frontId}
                       />
@@ -557,7 +556,6 @@ Submission Date: ${new Date().toISOString()}
                       <label className="block text-sm font-medium text-gray-700 mb-2">Back of Driver's License</label>
                       <FileUpload
                         onFileAccepted={setBackId}
-                        onFileRemoved={() => setBackId(null)}
                         side="back"
                         file={backId}
                       />
@@ -609,7 +607,7 @@ Submission Date: ${new Date().toISOString()}
                       type="button"
                       onClick={() => setStep('documents')}
                       className="w-full sm:w-auto px-6 py-3 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors"
-                      disabled={isRecording || isSubmitting}
+                      disabled={showVideoVerification || isSubmitting}
                     >
                       Back
                     </button>
