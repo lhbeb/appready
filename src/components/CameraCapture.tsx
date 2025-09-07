@@ -30,6 +30,11 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
   const [retryCount, setRetryCount] = useState(0);
   const [isInitializing, setIsInitializing] = useState(true);
   const [forceCapture, setForceCapture] = useState(false);
+  const [lightingQuality, setLightingQuality] = useState<{
+    level: 'excellent' | 'good' | 'fair' | 'poor' | 'very-poor';
+    message: string;
+    canCapture: boolean;
+  }>({ level: 'fair', message: 'Analyzing...', canCapture: false });
 
   // Multiple constraint sets for maximum compatibility
   const getConstraintSets = () => {
@@ -37,16 +42,16 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
     const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
     
     return [
-      // Try 1: Basic constraints for maximum compatibility
+      // Try 1: High resolution without forced aspect ratio
       {
         video: {
           facingMode: isFrontCamera ? 'user' : 'environment',
           width: { ideal: 1920, max: 1920 },
-          height: { ideal: 1080, max: 1080 },
-          aspectRatio: { ideal: 16/9 }
+          height: { ideal: 1080, max: 1080 }
+          // Removed aspectRatio to allow native camera ratios
         }
       },
-      // Try 2: Even more basic constraints
+      // Try 2: Medium resolution
       {
         video: {
           facingMode: isFrontCamera ? 'user' : 'environment',
@@ -54,7 +59,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
           height: { ideal: 720 }
         }
       },
-      // Try 3: Absolute minimum
+      // Try 3: Basic with facingMode only
       {
         video: {
           facingMode: isFrontCamera ? 'user' : 'environment'
@@ -156,7 +161,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
       width: { ideal: 1920, min: 640 },
       height: { ideal: 1080, min: 480 },
       facingMode: isFrontCamera ? 'user' : 'environment',
-      aspectRatio: { ideal: 16/9 }, // Add aspect ratio for better framing
+      // Removed aspectRatio to allow native camera ratios
     };
   };
 
@@ -244,24 +249,24 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
     }
   }, [retryCount]);
 
-  // Simplified card detection for both camera types
+  // Smart lighting detection that understands scene context
   useEffect(() => {
     if (!isVideoReady) return;
 
     let animationFrame: number;
     let frameCount = 0;
     
-    const detectCard = () => {
+    const detectLightingAndCard = () => {
       frameCount++;
       if (frameCount % 15 !== 0) { // Reduced frequency for better performance
-        animationFrame = requestAnimationFrame(detectCard);
+        animationFrame = requestAnimationFrame(detectLightingAndCard);
         return;
       }
       
       const video = useNativeCamera ? videoRef.current : webcamRef.current?.video;
       
       if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
-        animationFrame = requestAnimationFrame(detectCard);
+        animationFrame = requestAnimationFrame(detectLightingAndCard);
         return;
       }
 
@@ -270,39 +275,210 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
         const context = canvas.getContext('2d');
         
         if (context) {
-          canvas.width = 160;
-          canvas.height = 120;
+          // Use moderate canvas size for analysis
+          canvas.width = 320;
+          canvas.height = 240;
           context.drawImage(video, 0, 0, canvas.width, canvas.height);
           
-          const centerData = context.getImageData(
-            Math.floor(canvas.width * 0.25),
-            Math.floor(canvas.height * 0.25),
-            Math.floor(canvas.width * 0.5),
-            Math.floor(canvas.height * 0.5)
+          // Get image data for analysis
+          const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+          const data = imageData.data;
+          
+          // Analyze lighting quality using multiple metrics
+          const lightingMetrics = analyzeLightingQuality(data, canvas.width, canvas.height);
+          
+          setLightLevel(lightingMetrics.averageBrightness);
+          
+          // Smart detection based on multiple factors
+          const hasGoodLighting = lightingMetrics.isWellLit;
+          const hasProperContrast = lightingMetrics.hasContrast;
+          
+          // Card detection: look for rectangular shapes with good contrast
+          const cardDetected = hasProperContrast && (
+            forceCapture || 
+            (lightingMetrics.averageBrightness > 40 && lightingMetrics.averageBrightness < 250)
           );
           
-          let brightness = 0;
-          const sampleSize = Math.min(centerData.data.length / 4, 500);
+          setIsCardDetected(cardDetected);
           
-          for (let i = 0; i < sampleSize * 4; i += 20) {
-            brightness += (centerData.data[i] + centerData.data[i + 1] + centerData.data[i + 2]) / 3;
+          // Store lighting quality for UI feedback
+          const qualityAssessment = assessLightingQuality(lightingMetrics);
+          setLightingQuality(qualityAssessment);
+          
+          if (import.meta.env.DEV) {
+            console.log('Lighting analysis:', {
+              avgBrightness: lightingMetrics.averageBrightness.toFixed(1),
+              contrast: lightingMetrics.contrast.toFixed(2),
+              isWellLit: hasGoodLighting,
+              hasContrast: hasProperContrast,
+              cardDetected,
+              quality: qualityAssessment.level
+            });
           }
-          brightness /= sampleSize;
-          
-          setLightLevel(brightness);
-          // More lenient detection OR force capture mode
-          setIsCardDetected(forceCapture || (brightness > 30 && brightness < 300));
         }
       } catch (error) {
         // Silent error handling
       }
       
-      animationFrame = requestAnimationFrame(detectCard);
+      animationFrame = requestAnimationFrame(detectLightingAndCard);
     };
 
-    detectCard();
+    detectLightingAndCard();
     return () => cancelAnimationFrame(animationFrame);
   }, [isVideoReady, useNativeCamera, forceCapture]);
+
+  // Advanced lighting quality analysis
+  const analyzeLightingQuality = (data: Uint8ClampedArray, width: number, height: number) => {
+    let brightPixels = 0;
+    let darkPixels = 0;
+    let totalBrightness = 0;
+    let brightnessValues: number[] = [];
+    
+    // Sample pixels more efficiently
+    const step = 16; // Sample every 16th pixel for performance
+    const totalPixels = (width * height) / (step / 4);
+    
+    for (let i = 0; i < data.length; i += step) {
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+      
+      // Calculate luminance (perceived brightness)
+      const luminance = 0.299 * r + 0.587 * g + 0.114 * b;
+      brightnessValues.push(luminance);
+      totalBrightness += luminance;
+      
+      // Count bright vs dark pixels
+      if (luminance > 120) brightPixels++;
+      else if (luminance < 60) darkPixels++;
+    }
+    
+    const averageBrightness = totalBrightness / totalPixels;
+    
+    // Calculate contrast (standard deviation of brightness)
+    const variance = brightnessValues.reduce((sum, val) => {
+      return sum + Math.pow(val - averageBrightness, 2);
+    }, 0) / brightnessValues.length;
+    const contrast = Math.sqrt(variance);
+    
+    // Calculate brightness distribution
+    const brightRatio = brightPixels / totalPixels;
+    const darkRatio = darkPixels / totalPixels;
+    
+    // Determine lighting quality based on multiple factors
+    const isWellLit = (
+      averageBrightness > 60 &&           // Not too dark overall
+      averageBrightness < 220 &&          // Not overexposed
+      contrast > 20 &&                    // Has decent contrast
+      brightRatio > 0.1 &&                // Has some bright areas
+      darkRatio < 0.7                     // Not mostly dark
+    );
+    
+    const hasContrast = contrast > 15;    // Minimum contrast for text/details
+    
+    return {
+      averageBrightness,
+      contrast,
+      brightRatio,
+      darkRatio,
+      isWellLit,
+      hasContrast
+    };
+  };
+
+  // Smart lighting quality assessment with contextual messages
+  const assessLightingQuality = (metrics: {
+    averageBrightness: number;
+    contrast: number;
+    brightRatio: number;
+    darkRatio: number;
+    isWellLit: boolean;
+    hasContrast: boolean;
+  }) => {
+    const { averageBrightness, contrast, brightRatio, darkRatio, isWellLit, hasContrast } = metrics;
+    
+    // Excellent lighting conditions
+    if (isWellLit && contrast > 40 && brightRatio > 0.3) {
+      return {
+        level: 'excellent' as const,
+        message: '📷 Perfect Lighting',
+        canCapture: true
+      };
+    }
+    
+    // Good lighting conditions
+    if (isWellLit && hasContrast) {
+      return {
+        level: 'good' as const,
+        message: '📷 Good Lighting',
+        canCapture: true
+      };
+    }
+    
+    // Fair conditions - check specific issues
+    if (hasContrast) {
+      if (averageBrightness < 50) {
+        return {
+          level: 'fair' as const,
+          message: '📷 Slightly Dark - OK',
+          canCapture: true
+        };
+      }
+      if (averageBrightness > 200) {
+        return {
+          level: 'fair' as const,
+          message: '📷 Bright Scene - OK',
+          canCapture: true
+        };
+      }
+      return {
+        level: 'good' as const,
+        message: '📷 Good Contrast',
+        canCapture: true
+      };
+    }
+    
+    // Poor conditions - provide specific guidance
+    if (averageBrightness < 30 && brightRatio < 0.05) {
+      return {
+        level: 'poor' as const,
+        message: '💡 Need More Light',
+        canCapture: false
+      };
+    }
+    
+    if (averageBrightness > 230 && contrast < 10) {
+      return {
+        level: 'poor' as const,
+        message: '☀️ Too Bright/Washed Out',
+        canCapture: false
+      };
+    }
+    
+    if (contrast < 10) {
+      return {
+        level: 'poor' as const,
+        message: '📷 Low Contrast Scene',
+        canCapture: false
+      };
+    }
+    
+    // Very poor conditions
+    if (averageBrightness < 20) {
+      return {
+        level: 'very-poor' as const,
+        message: '🔦 Very Dark - Add Light',
+        canCapture: false
+      };
+    }
+    
+    // Default fair assessment
+    return {
+      level: 'fair' as const,
+      message: '📷 Adequate Lighting',
+      canCapture: true
+    };
+  };
 
   const toggleCamera = useCallback(async () => {
     setIsFrontCamera(prev => !prev);
@@ -349,7 +525,12 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
       }
 
       if (!isCardDetected && !forceCapture) {
-        toast.error('Please position ID card properly within the frame or use "Capture Anyway"');
+        const canCapture = lightingQuality.canCapture || forceCapture;
+        if (!canCapture) {
+          toast.error(`${lightingQuality.message} - Use "Capture Anyway" if needed`);
+        } else {
+          toast.error('Please position ID card properly within the frame');
+        }
         return;
       }
 
@@ -363,14 +544,32 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
         const context = canvas.getContext('2d');
         
         if (context) {
+          // Use the video's actual dimensions to preserve aspect ratio
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
-          context.drawImage(video, 0, 0);
+          
+          // Clear canvas and draw the video frame
+          context.clearRect(0, 0, canvas.width, canvas.height);
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          
+          // Get high quality image data
           imageSrc = canvas.toDataURL('image/jpeg', 0.95);
+          
+          if (import.meta.env.DEV) {
+            console.log(`Native capture: ${canvas.width}x${canvas.height} (${side} camera)`);
+          }
         }
       } else {
         // Capture from react-webcam
         imageSrc = webcamRef.current?.getScreenshot() || null;
+        
+        if (import.meta.env.DEV && imageSrc) {
+          const img = new Image();
+          img.onload = () => {
+            console.log(`Webcam capture: ${img.width}x${img.height} (${side} camera)`);
+          };
+          img.src = imageSrc;
+        }
       }
       
       if (!imageSrc) {
@@ -381,13 +580,14 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
       const response = await fetch(imageSrc);
       const blob = await response.blob();
 
-      // Compress the image while maintaining high quality for ID documents
+      // Compress the image while preserving aspect ratio and quality
       new Compressor(blob, {
         quality: 0.92,           // High quality but not maximum to ensure compatibility
-        maxWidth: 2560,         // Reasonable max width for mobile compatibility
-        maxHeight: 1920,        // Reasonable max height for mobile compatibility
+        maxWidth: 3840,         // Increased to accommodate higher resolutions
+        maxHeight: 2880,        // Increased to accommodate different aspect ratios
         mimeType: 'image/jpeg', // Explicitly set MIME type
-        convertSize: 3000000,   // Only compress if file is larger than 3MB
+        convertSize: 4000000,   // Only compress if file is larger than 4MB
+        resize: 'contain',      // Preserve aspect ratio during resize
         success: (compressedBlob) => {
           const file = new File([compressedBlob], `${side}-id.jpg`, {
             type: 'image/jpeg',
@@ -397,7 +597,8 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
           if (import.meta.env.DEV) {
             const img = new Image();
             img.onload = () => {
-              console.log(`${side} ID captured at ${img.width}x${img.height} resolution`);
+              console.log(`${side} ID final compressed: ${img.width}x${img.height} (aspect ratio: ${(img.width/img.height).toFixed(2)})`);
+              console.log(`${side} camera type: ${isFrontCamera ? 'front' : 'back'}, using ${useNativeCamera ? 'native' : 'webcam'} capture`);
             };
             img.src = URL.createObjectURL(file);
           }
@@ -562,7 +763,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
             <div className="text-white text-sm font-medium px-4 py-2 bg-black/30 rounded-full">
               {isInitializing ? 'Initializing...' : 
                !isVideoReady ? 'Loading Camera...' : 
-               isCardDetected ? 'ID Detected' : 'Position ID Card'}
+               isCardDetected ? 'ID Detected ✓' : 'Position ID Card'}
             </div>
             <button
               onClick={toggleFlash}
@@ -608,23 +809,30 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
           </div>
         )}
 
-        {/* Light Level Indicator */}
+        {/* Smart Light Level Indicator */}
         {!cameraError && !isInitializing && (
           <div className="absolute bottom-24 left-1/2 transform -translate-x-1/2 flex flex-col items-center gap-2">
-            <div className="px-4 py-2 rounded-full bg-black/30 text-white text-sm">
-              {!isVideoReady ? '📷 Camera Loading' : 
-                lightLevel < 20 ? '📷 Too Dark' : 
-                lightLevel > 280 ? '📷 Too Bright' : 
-                '📷 Good Lighting'
-              }
+            <div className={`px-4 py-2 rounded-full text-white text-sm transition-colors duration-300 ${
+              lightingQuality.level === 'excellent' ? 'bg-green-600/80' :
+              lightingQuality.level === 'good' ? 'bg-green-500/80' :
+              lightingQuality.level === 'fair' ? 'bg-yellow-500/80' :
+              lightingQuality.level === 'poor' ? 'bg-orange-500/80' :
+              'bg-red-500/80'
+            }`}>
+              {!isVideoReady ? '📷 Camera Loading' : lightingQuality.message}
             </div>
-            {(lightLevel < 30 || lightLevel > 300) && !forceCapture && (
+            {!lightingQuality.canCapture && !forceCapture && (
               <button
                 onClick={() => setForceCapture(true)}
-                className="px-3 py-1 text-xs bg-yellow-600 hover:bg-yellow-700 text-white rounded-full transition-colors"
+                className="px-3 py-1 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded-full transition-colors"
               >
                 Capture Anyway
               </button>
+            )}
+            {forceCapture && (
+              <div className="text-xs text-green-400 bg-black/50 px-2 py-1 rounded">
+                Override Active ✓
+              </div>
             )}
           </div>
         )}
