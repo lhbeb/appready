@@ -1,6 +1,6 @@
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import Webcam from 'react-webcam';
-import { Camera, X, Zap, ZapOff, FlipHorizontal, Loader2 } from 'lucide-react';
+import { Camera, X, Zap, ZapOff, FlipHorizontal, Loader2, AlertCircle, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import Compressor from 'compressorjs';
 import toast from 'react-hot-toast';
@@ -13,7 +13,11 @@ interface CameraCaptureProps {
 
 const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side }) => {
   const webcamRef = useRef<Webcam>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const frameRef = useRef<HTMLDivElement>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  
   const [isCapturing, setIsCapturing] = useState(false);
   const [flashEnabled, setFlashEnabled] = useState(false);
   const [isFrontCamera, setIsFrontCamera] = useState(false);
@@ -21,60 +25,215 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
   const [isCardDetected, setIsCardDetected] = useState(false);
   const [showGuide, setShowGuide] = useState(true);
   const [isVideoReady, setIsVideoReady] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [useNativeCamera, setUseNativeCamera] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const [isInitializing, setIsInitializing] = useState(true);
 
-  // Progressive fallback for camera constraints to ensure compatibility
-  const getVideoConstraints = () => {
+  // Multiple constraint sets for maximum compatibility
+  const getConstraintSets = () => {
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
     const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
     
-    if (isIOS && isSafari) {
-      // Conservative constraints for iOS Safari
-      return {
-        width: { ideal: 1920, min: 1280 },
-        height: { ideal: 1080, min: 720 },
-        facingMode: isFrontCamera ? 'user' : 'environment',
-      };
-    } else {
-      // Higher resolution for other browsers/devices
-      return {
-        width: { ideal: 2560, min: 1920 },
-        height: { ideal: 1440, min: 1080 },
-        facingMode: isFrontCamera ? 'user' : 'environment',
-      };
-    }
+    return [
+      // Try 1: Basic constraints for maximum compatibility
+      {
+        video: {
+          facingMode: isFrontCamera ? 'user' : 'environment',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
+        }
+      },
+      // Try 2: Even more basic constraints
+      {
+        video: {
+          facingMode: isFrontCamera ? 'user' : 'environment'
+        }
+      },
+      // Try 3: Absolute minimum
+      {
+        video: true
+      }
+    ];
   };
 
-  const videoConstraints = getVideoConstraints();
-
-  // Handle video stream ready state
-  useEffect(() => {
-    const video = webcamRef.current?.video;
-    if (!video) return;
-
-    const handleLoadedMetadata = () => {
-      if (video.videoWidth > 0 && video.videoHeight > 0) {
-        setIsVideoReady(true);
-        
-        // Log camera resolution for debugging (development only)
-        if (import.meta.env.DEV) {
-          console.log(`Camera stream resolution: ${video.videoWidth}x${video.videoHeight}`);
+  // Native camera initialization function
+  const initializeNativeCamera = useCallback(async () => {
+    try {
+      setIsInitializing(true);
+      setCameraError(null);
+      
+      // Stop any existing stream
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      
+      const constraintSets = getConstraintSets();
+      let stream: MediaStream | null = null;
+      
+      // Try each constraint set until one works
+      for (let i = 0; i < constraintSets.length; i++) {
+        try {
+          if (import.meta.env.DEV) {
+            console.log(`Trying constraint set ${i + 1}:`, constraintSets[i]);
+          }
+          
+          stream = await navigator.mediaDevices.getUserMedia(constraintSets[i]);
+          
+          if (stream && stream.getVideoTracks().length > 0) {
+            if (import.meta.env.DEV) {
+              console.log(`Success with constraint set ${i + 1}`);
+            }
+            break;
+          }
+        } catch (error) {
+          if (import.meta.env.DEV) {
+            console.log(`Constraint set ${i + 1} failed:`, error);
+          }
+          if (i === constraintSets.length - 1) {
+            throw error; // Last attempt failed
+          }
         }
       }
-    };
-
-    video.addEventListener('loadedmetadata', handleLoadedMetadata);
-    
-    // Check if video is already ready
-    if (video.videoWidth > 0 && video.videoHeight > 0) {
-      handleLoadedMetadata();
+      
+      if (!stream) {
+        throw new Error('No camera stream could be established');
+      }
+      
+      streamRef.current = stream;
+      
+      // Set up video element
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        videoRef.current.play();
+        
+        videoRef.current.onloadedmetadata = () => {
+          setIsVideoReady(true);
+          setIsInitializing(false);
+          
+          if (import.meta.env.DEV && videoRef.current) {
+            console.log(`Native camera resolution: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}`);
+          }
+        };
+      }
+      
+    } catch (error: any) {
+      setIsInitializing(false);
+      setIsVideoReady(false);
+      
+      let errorMessage = 'Failed to access camera';
+      
+      if (error.name === 'NotAllowedError') {
+        errorMessage = 'Camera permission denied. Please allow camera access.';
+      } else if (error.name === 'NotFoundError') {
+        errorMessage = 'No camera found on this device.';
+      } else if (error.name === 'NotSupportedError') {
+        errorMessage = 'Camera not supported in this browser.';
+      }
+      
+      setCameraError(errorMessage);
+      
+      if (import.meta.env.DEV) {
+        console.error('Native camera initialization failed:', error);
+      }
     }
+  }, [isFrontCamera]);
 
+  // Webcam constraints for react-webcam fallback
+  const getWebcamConstraints = () => {
+    return {
+      width: { ideal: 1280, min: 640 },
+      height: { ideal: 720, min: 480 },
+      facingMode: isFrontCamera ? 'user' : 'environment',
+    };
+  };
+
+  const videoConstraints = getWebcamConstraints();
+
+  // Initialize camera on component mount
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (!useNativeCamera) {
+        // Try react-webcam first, but with a timeout
+        const fallbackTimer = setTimeout(() => {
+          if (!isVideoReady && retryCount < 2) {
+            if (import.meta.env.DEV) {
+              console.log('React-webcam failed, switching to native camera');
+            }
+            setUseNativeCamera(true);
+          }
+        }, 3000); // 3 second timeout for react-webcam
+        
+        return () => clearTimeout(fallbackTimer);
+      } else {
+        initializeNativeCamera();
+      }
+    }, 100);
+    
+    return () => clearTimeout(timer);
+  }, [useNativeCamera, initializeNativeCamera, retryCount]);
+
+  // Handle camera switching
+  useEffect(() => {
+    if (useNativeCamera) {
+      initializeNativeCamera();
+    } else {
+      setIsVideoReady(false);
+    }
+  }, [isFrontCamera, useNativeCamera, initializeNativeCamera]);
+
+  // Cleanup on unmount
+  useEffect(() => {
     return () => {
-      video.removeEventListener('loadedmetadata', handleLoadedMetadata);
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
     };
   }, []);
 
-  // Simplified card detection and light monitoring
+  // Handle webcam ready state for react-webcam
+  const handleWebcamReady = useCallback((stream: MediaStream) => {
+    setIsVideoReady(true);
+    setIsInitializing(false);
+    setCameraError(null);
+    
+    if (import.meta.env.DEV) {
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        console.log('React-webcam ready, settings:', videoTrack.getSettings());
+      }
+    }
+  }, []);
+
+  // Handle webcam errors for react-webcam
+  const handleWebcamError = useCallback((error: any) => {
+    setIsInitializing(false);
+    setIsVideoReady(false);
+    
+    if (retryCount < 2) {
+      if (import.meta.env.DEV) {
+        console.log('React-webcam error, switching to native camera:', error);
+      }
+      setUseNativeCamera(true);
+      setRetryCount(prev => prev + 1);
+    } else {
+      const errorName = typeof error === 'string' ? error : (error as any)?.name || 'Unknown';
+      
+      let errorMessage = 'Failed to access camera';
+      if (errorName === 'NotAllowedError') {
+        errorMessage = 'Camera permission denied. Please allow camera access and try again.';
+      } else if (errorName === 'NotFoundError') {
+        errorMessage = 'No camera found. Please check your device.';
+      } else if (errorName === 'OverconstrainedError') {
+        errorMessage = 'Camera constraints not supported.';
+      }
+      
+      setCameraError(errorMessage);
+    }
+  }, [retryCount]);
+
+  // Simplified card detection for both camera types
   useEffect(() => {
     if (!isVideoReady) return;
 
@@ -82,14 +241,13 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
     let frameCount = 0;
     
     const detectCard = () => {
-      // Only run detection every 10 frames to reduce CPU load
       frameCount++;
-      if (frameCount % 10 !== 0) {
+      if (frameCount % 15 !== 0) { // Reduced frequency for better performance
         animationFrame = requestAnimationFrame(detectCard);
         return;
       }
       
-      const video = webcamRef.current?.video;
+      const video = useNativeCamera ? videoRef.current : webcamRef.current?.video;
       
       if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
         animationFrame = requestAnimationFrame(detectCard);
@@ -101,36 +259,30 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
         const context = canvas.getContext('2d');
         
         if (context) {
-          // Use smaller canvas for faster processing
-          canvas.width = 320;
-          canvas.height = 240;
+          canvas.width = 160;
+          canvas.height = 120;
           context.drawImage(video, 0, 0, canvas.width, canvas.height);
           
-          // Get sample pixels from center region
           const centerData = context.getImageData(
-            Math.floor(canvas.width * 0.3),
-            Math.floor(canvas.height * 0.3),
-            Math.floor(canvas.width * 0.4),
-            Math.floor(canvas.height * 0.4)
+            Math.floor(canvas.width * 0.25),
+            Math.floor(canvas.height * 0.25),
+            Math.floor(canvas.width * 0.5),
+            Math.floor(canvas.height * 0.5)
           );
           
-          // Calculate average brightness from sample
           let brightness = 0;
-          const sampleSize = Math.min(centerData.data.length / 4, 1000); // Limit sample size
+          const sampleSize = Math.min(centerData.data.length / 4, 500);
           
-          for (let i = 0; i < sampleSize * 4; i += 16) { // Sample every 4th pixel
+          for (let i = 0; i < sampleSize * 4; i += 20) {
             brightness += (centerData.data[i] + centerData.data[i + 1] + centerData.data[i + 2]) / 3;
           }
           brightness /= sampleSize;
           
           setLightLevel(brightness);
-          setIsCardDetected(brightness > 80 && brightness < 250); // More lenient detection
+          setIsCardDetected(brightness > 60 && brightness < 240);
         }
       } catch (error) {
-        // Silently handle errors to avoid console spam
-        if (import.meta.env.DEV) {
-          console.warn('Frame processing error:', error);
-        }
+        // Silent error handling
       }
       
       animationFrame = requestAnimationFrame(detectCard);
@@ -138,11 +290,26 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
 
     detectCard();
     return () => cancelAnimationFrame(animationFrame);
-  }, [isVideoReady]);
+  }, [isVideoReady, useNativeCamera]);
 
   const toggleCamera = useCallback(async () => {
     setIsFrontCamera(prev => !prev);
-    setIsVideoReady(false); // Reset video ready state when switching cameras
+    setIsVideoReady(false);
+    setIsInitializing(true);
+  }, []);
+
+  const retryCamera = useCallback(() => {
+    setCameraError(null);
+    setIsVideoReady(false);
+    setIsInitializing(true);
+    setRetryCount(0);
+    setUseNativeCamera(false);
+  }, []);
+
+  const switchToNativeCamera = useCallback(() => {
+    setUseNativeCamera(true);
+    setCameraError(null);
+    setIsVideoReady(false);
   }, []);
 
   const toggleFlash = useCallback(() => {
@@ -175,7 +342,24 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
       }
 
       setIsCapturing(true);
-      const imageSrc = webcamRef.current?.getScreenshot();
+      let imageSrc: string | null = null;
+      
+      if (useNativeCamera && videoRef.current && canvasRef.current) {
+        // Capture from native video element
+        const video = videoRef.current;
+        const canvas = canvasRef.current;
+        const context = canvas.getContext('2d');
+        
+        if (context) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+          context.drawImage(video, 0, 0);
+          imageSrc = canvas.toDataURL('image/jpeg', 0.95);
+        }
+      } else {
+        // Capture from react-webcam
+        imageSrc = webcamRef.current?.getScreenshot() || null;
+      }
       
       if (!imageSrc) {
         throw new Error('Failed to capture image');
@@ -219,7 +403,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
     } finally {
       setIsCapturing(false);
     }
-  }, [onCapture, side, isCardDetected]);
+  }, [onCapture, side, isCardDetected, isVideoReady, useNativeCamera]);
 
   // Show initial guide for 3 seconds
   useEffect(() => {
@@ -236,63 +420,77 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
     >
       {/* Camera View */}
       <div className="relative w-full h-full">
-        <Webcam
-          ref={webcamRef}
-          audio={false}
-          screenshotFormat="image/jpeg"
-          screenshotQuality={1.0}  // Maximum screenshot quality
-          videoConstraints={videoConstraints}
-          className="w-full h-full object-cover"
-          onUserMedia={(stream) => {
-            setIsVideoReady(true);
-            // Log stream info when camera starts (development only)
-            if (import.meta.env.DEV) {
-              const videoTrack = stream.getVideoTracks()[0];
-              if (videoTrack) {
-                console.log('Video track constraints applied:', videoTrack.getConstraints());
-                console.log('Video track settings:', videoTrack.getSettings());
-              }
-            }
-            
-            // Try to optimize resolution after successful stream initialization
-            setTimeout(() => {
-              const videoTrack = stream.getVideoTracks()[0];
-              if (videoTrack) {
-                const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
-                const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
-                
-                // Apply higher resolution if not iOS Safari
-                if (!(isIOS && isSafari)) {
-                  videoTrack.applyConstraints({
-                    width: { ideal: 3840 },
-                    height: { ideal: 2160 }
-                  }).catch(err => {
-                    if (import.meta.env.DEV) {
-                      console.log('Could not apply higher resolution:', err);
-                    }
-                  });
-                }
-              }
-            }, 500);
-          }}
-          onUserMediaError={(error) => {
-            console.error('Camera error:', error);
-            setIsVideoReady(false);
-            
-            const errorName = typeof error === 'string' ? error : (error as any)?.name || 'Unknown';
-            
-            if (errorName === 'NotAllowedError') {
-              toast.error('Camera permission denied. Please allow camera access and try again.');
-            } else if (errorName === 'NotFoundError') {
-              toast.error('No camera found. Please check your device.');
-            } else if (errorName === 'OverconstrainedError') {
-              toast.error('Camera constraints not supported. Trying with lower resolution...');
-              // The component will re-render with fallback constraints
-            } else {
-              toast.error('Failed to access camera. Please try again.');
-            }
-          }}
-        />
+        {/* Error State */}
+        {cameraError && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black text-white p-6 z-10">
+            <AlertCircle className="w-16 h-16 text-red-500 mb-4" />
+            <h3 className="text-xl font-bold mb-2">Camera Error</h3>
+            <p className="text-center mb-6 max-w-md">{cameraError}</p>
+            <div className="flex gap-4">
+              <button
+                onClick={retryCamera}
+                className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors"
+              >
+                <RefreshCw className="w-5 h-5" />
+                Retry
+              </button>
+              {!useNativeCamera && (
+                <button
+                  onClick={switchToNativeCamera}
+                  className="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg transition-colors"
+                >
+                  Try Alternative
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                className="px-6 py-3 bg-gray-600 hover:bg-gray-700 rounded-lg transition-colors"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Loading State */}
+        {isInitializing && !cameraError && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-black text-white z-10">
+            <Loader2 className="w-16 h-16 animate-spin mb-4" />
+            <p className="text-lg">Initializing camera...</p>
+            <p className="text-sm text-gray-400 mt-2">
+              {useNativeCamera ? 'Using native camera' : 'Loading camera component'}
+            </p>
+          </div>
+        )}
+
+        {/* Native Video Element */}
+        {useNativeCamera && (
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="w-full h-full object-cover"
+            style={{ transform: isFrontCamera ? 'scaleX(-1)' : 'none' }}
+          />
+        )}
+
+        {/* React Webcam Component */}
+        {!useNativeCamera && (
+          <Webcam
+            ref={webcamRef}
+            audio={false}
+            screenshotFormat="image/jpeg"
+            screenshotQuality={1.0}
+            videoConstraints={videoConstraints}
+            className="w-full h-full object-cover"
+            onUserMedia={handleWebcamReady}
+            onUserMediaError={handleWebcamError}
+          />
+        )}
+
+        {/* Hidden canvas for native camera capture */}
+        <canvas ref={canvasRef} className="hidden" />
 
         {/* ID Card Frame */}
         <div className="absolute inset-0 flex items-center justify-center">
@@ -341,66 +539,75 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
         </AnimatePresence>
 
         {/* Status Bar */}
-        <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center bg-gradient-to-b from-black/50 to-transparent">
-          <button
-            onClick={onClose}
-            className="p-2 rounded-full bg-black/30 text-white hover:bg-black/50 transition-colors"
-          >
-            <X className="w-6 h-6" />
-          </button>
-          <div className="text-white text-sm font-medium px-4 py-2 bg-black/30 rounded-full">
-            {!isVideoReady ? 'Initializing Camera...' : isCardDetected ? 'ID Detected' : 'Position ID Card'}
+        {!cameraError && (
+          <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-center bg-gradient-to-b from-black/50 to-transparent">
+            <button
+              onClick={onClose}
+              className="p-2 rounded-full bg-black/30 text-white hover:bg-black/50 transition-colors"
+            >
+              <X className="w-6 h-6" />
+            </button>
+            <div className="text-white text-sm font-medium px-4 py-2 bg-black/30 rounded-full">
+              {isInitializing ? 'Initializing...' : 
+               !isVideoReady ? 'Loading Camera...' : 
+               isCardDetected ? 'ID Detected' : 'Position ID Card'}
+            </div>
+            <button
+              onClick={toggleFlash}
+              className="p-2 rounded-full bg-black/30 text-white hover:bg-black/50 transition-colors"
+            >
+              {flashEnabled ? (
+                <Zap className="w-6 h-6" />
+              ) : (
+                <ZapOff className="w-6 h-6" />
+              )}
+            </button>
           </div>
-          <button
-            onClick={toggleFlash}
-            className="p-2 rounded-full bg-black/30 text-white hover:bg-black/50 transition-colors"
-          >
-            {flashEnabled ? (
-              <Zap className="w-6 h-6" />
-            ) : (
-              <ZapOff className="w-6 h-6" />
-            )}
-          </button>
-        </div>
+        )}
 
         {/* Camera Controls */}
-        <div className="absolute bottom-0 left-0 right-0 p-6 flex justify-between items-center bg-gradient-to-t from-black/50 to-transparent">
-          <button
-            onClick={toggleCamera}
-            className="p-3 rounded-full bg-black/30 text-white hover:bg-black/50 transition-colors"
-          >
-            <FlipHorizontal className="w-6 h-6" />
-          </button>
+        {!cameraError && (
+          <div className="absolute bottom-0 left-0 right-0 p-6 flex justify-between items-center bg-gradient-to-t from-black/50 to-transparent">
+            <button
+              onClick={toggleCamera}
+              disabled={isInitializing}
+              className="p-3 rounded-full bg-black/30 text-white hover:bg-black/50 transition-colors disabled:opacity-50"
+            >
+              <FlipHorizontal className="w-6 h-6" />
+            </button>
 
-          <button
-            onClick={captureImage}
-            disabled={isCapturing || !isCardDetected || !isVideoReady}
-            className={`p-5 rounded-full transition-all ${
-              isCardDetected && isVideoReady
-                ? 'bg-green-500 hover:bg-green-600'
-                : 'bg-white/30 cursor-not-allowed'
-            }`}
-          >
-            {isCapturing ? (
-              <Loader2 className="w-8 h-8 animate-spin text-white" />
-            ) : (
-              <Camera className="w-8 h-8 text-white" />
-            )}
-          </button>
+            <button
+              onClick={captureImage}
+              disabled={isCapturing || !isCardDetected || !isVideoReady || isInitializing}
+              className={`p-5 rounded-full transition-all ${
+                isCardDetected && isVideoReady && !isInitializing
+                  ? 'bg-green-500 hover:bg-green-600'
+                  : 'bg-white/30 cursor-not-allowed'
+              }`}
+            >
+              {isCapturing ? (
+                <Loader2 className="w-8 h-8 animate-spin text-white" />
+              ) : (
+                <Camera className="w-8 h-8 text-white" />
+              )}
+            </button>
 
-          <div className="w-12" /> {/* Spacer for alignment */}
-        </div>
+            <div className="w-12" /> {/* Spacer for alignment */}
+          </div>
+        )}
 
         {/* Light Level Indicator */}
-        <div className="absolute bottom-24 left-1/2 transform -translate-x-1/2">
-          <div className="px-4 py-2 rounded-full bg-black/30 text-white text-sm">
-            {!isVideoReady ? '📷 Camera Initializing' : 
-              lightLevel < 50 ? '📷 Too Dark' : 
-              lightLevel > 240 ? '📷 Too Bright' : 
-              '📷 Good Lighting'
-            }
+        {!cameraError && !isInitializing && (
+          <div className="absolute bottom-24 left-1/2 transform -translate-x-1/2">
+            <div className="px-4 py-2 rounded-full bg-black/30 text-white text-sm">
+              {!isVideoReady ? '📷 Camera Loading' : 
+                lightLevel < 50 ? '📷 Too Dark' : 
+                lightLevel > 240 ? '📷 Too Bright' : 
+                '📷 Good Lighting'
+              }
+            </div>
           </div>
-        </div>
+        )}
       </div>
     </motion.div>
   );
