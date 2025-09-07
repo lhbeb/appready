@@ -22,30 +22,31 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
   const [showGuide, setShowGuide] = useState(true);
   const [isVideoReady, setIsVideoReady] = useState(false);
 
-  const videoConstraints = {
-    width: { 
-      ideal: 4096,  // Higher than 4K for mobile cameras that support it
-      min: 1920     // Minimum Full HD
-    },
-    height: { 
-      ideal: 3072,  // Higher aspect ratio for mobile cameras
-      min: 1080     // Minimum Full HD
-    },
-    facingMode: isFrontCamera ? 'user' : 'environment',
-    // Remove aspectRatio constraint to allow native camera ratios
-    advanced: [
-      {
-        exposureMode: 'continuous',
-        focusMode: 'continuous',
-        whiteBalanceMode: 'continuous',
-        // Request maximum resolution explicitly
-        width: { max: 4096, ideal: 4096 },
-        height: { max: 3072, ideal: 3072 }
-      },
-    ],
+  // Progressive fallback for camera constraints to ensure compatibility
+  const getVideoConstraints = () => {
+    const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    
+    if (isIOS && isSafari) {
+      // Conservative constraints for iOS Safari
+      return {
+        width: { ideal: 1920, min: 1280 },
+        height: { ideal: 1080, min: 720 },
+        facingMode: isFrontCamera ? 'user' : 'environment',
+      };
+    } else {
+      // Higher resolution for other browsers/devices
+      return {
+        width: { ideal: 2560, min: 1920 },
+        height: { ideal: 1440, min: 1080 },
+        facingMode: isFrontCamera ? 'user' : 'environment',
+      };
+    }
   };
 
-  // Handle video stream ready state and log camera capabilities
+  const videoConstraints = getVideoConstraints();
+
+  // Handle video stream ready state
   useEffect(() => {
     const video = webcamRef.current?.video;
     if (!video) return;
@@ -58,21 +59,6 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
         if (import.meta.env.DEV) {
           console.log(`Camera stream resolution: ${video.videoWidth}x${video.videoHeight}`);
         }
-        
-        // Log camera capabilities if available (development only)
-        if (import.meta.env.DEV) {
-          const stream = video.srcObject as MediaStream;
-          if (stream) {
-            const videoTrack = stream.getVideoTracks()[0];
-            if (videoTrack) {
-              const capabilities = videoTrack.getCapabilities();
-              console.log('Camera capabilities:', capabilities);
-              
-              const settings = videoTrack.getSettings();
-              console.log('Current camera settings:', settings);
-            }
-          }
-        }
       }
     };
 
@@ -80,7 +66,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
     
     // Check if video is already ready
     if (video.videoWidth > 0 && video.videoHeight > 0) {
-      setIsVideoReady(true);
+      handleLoadedMetadata();
     }
 
     return () => {
@@ -88,12 +74,21 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
     };
   }, []);
 
-  // Simulate ID card detection based on light levels and motion
+  // Simplified card detection and light monitoring
   useEffect(() => {
     if (!isVideoReady) return;
 
     let animationFrame: number;
+    let frameCount = 0;
+    
     const detectCard = () => {
+      // Only run detection every 10 frames to reduce CPU load
+      frameCount++;
+      if (frameCount % 10 !== 0) {
+        animationFrame = requestAnimationFrame(detectCard);
+        return;
+      }
+      
       const video = webcamRef.current?.video;
       
       if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
@@ -101,35 +96,40 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
         return;
       }
 
-      const canvas = document.createElement('canvas');
-      const context = canvas.getContext('2d');
-      
-      if (context) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+      try {
+        const canvas = document.createElement('canvas');
+        const context = canvas.getContext('2d');
         
-        try {
-          context.drawImage(video, 0, 0);
+        if (context) {
+          // Use smaller canvas for faster processing
+          canvas.width = 320;
+          canvas.height = 240;
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
           
-          // Get the center region of the frame
+          // Get sample pixels from center region
           const centerData = context.getImageData(
-            Math.floor(canvas.width * 0.25),
-            Math.floor(canvas.height * 0.25),
-            Math.floor(canvas.width * 0.5),
-            Math.floor(canvas.height * 0.5)
+            Math.floor(canvas.width * 0.3),
+            Math.floor(canvas.height * 0.3),
+            Math.floor(canvas.width * 0.4),
+            Math.floor(canvas.height * 0.4)
           );
           
-          // Calculate average brightness
+          // Calculate average brightness from sample
           let brightness = 0;
-          for (let i = 0; i < centerData.data.length; i += 4) {
+          const sampleSize = Math.min(centerData.data.length / 4, 1000); // Limit sample size
+          
+          for (let i = 0; i < sampleSize * 4; i += 16) { // Sample every 4th pixel
             brightness += (centerData.data[i] + centerData.data[i + 1] + centerData.data[i + 2]) / 3;
           }
-          brightness /= (centerData.data.length / 4);
+          brightness /= sampleSize;
           
           setLightLevel(brightness);
-          setIsCardDetected(brightness > 100 && brightness < 240); // Detect card based on reasonable light levels
-        } catch (error) {
-          console.error('Error processing video frame:', error);
+          setIsCardDetected(brightness > 80 && brightness < 250); // More lenient detection
+        }
+      } catch (error) {
+        // Silently handle errors to avoid console spam
+        if (import.meta.env.DEV) {
+          console.warn('Frame processing error:', error);
         }
       }
       
@@ -143,26 +143,6 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
   const toggleCamera = useCallback(async () => {
     setIsFrontCamera(prev => !prev);
     setIsVideoReady(false); // Reset video ready state when switching cameras
-    
-    // Small delay to ensure state update before requesting new stream
-    setTimeout(() => {
-      const video = webcamRef.current?.video;
-      if (video && video.srcObject) {
-        const stream = video.srcObject as MediaStream;
-        const videoTrack = stream.getVideoTracks()[0];
-        if (videoTrack) {
-          // Try to apply maximum resolution constraints after camera switch
-          videoTrack.applyConstraints({
-            width: { ideal: 4096 },
-            height: { ideal: 3072 }
-          }).catch(err => {
-            if (import.meta.env.DEV) {
-              console.log('Could not apply max resolution constraints:', err);
-            }
-          });
-        }
-      }
-    }, 100);
   }, []);
 
   const toggleFlash = useCallback(() => {
@@ -184,6 +164,11 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
 
   const captureImage = useCallback(async () => {
     try {
+      if (!isVideoReady) {
+        toast.error('Camera is still initializing. Please wait a moment.');
+        return;
+      }
+
       if (!isCardDetected) {
         toast.error('Please position ID card properly within the frame');
         return;
@@ -200,13 +185,13 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
       const response = await fetch(imageSrc);
       const blob = await response.blob();
 
-      // Compress the image while maintaining maximum quality for ID documents
+      // Compress the image while maintaining high quality for ID documents
       new Compressor(blob, {
-        quality: 0.95,           // Increased from 0.9 to 0.95 for higher quality
-        maxWidth: 4096,         // Increased from 3840 to support higher resolution
-        maxHeight: 3072,        // Increased from 2160 to support mobile camera ratios
+        quality: 0.92,           // High quality but not maximum to ensure compatibility
+        maxWidth: 2560,         // Reasonable max width for mobile compatibility
+        maxHeight: 1920,        // Reasonable max height for mobile compatibility
         mimeType: 'image/jpeg', // Explicitly set MIME type
-        convertSize: 5000000,   // Only compress if file is larger than 5MB
+        convertSize: 3000000,   // Only compress if file is larger than 3MB
         success: (compressedBlob) => {
           const file = new File([compressedBlob], `${side}-id.jpg`, {
             type: 'image/jpeg',
@@ -259,17 +244,53 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
           videoConstraints={videoConstraints}
           className="w-full h-full object-cover"
           onUserMedia={(stream) => {
+            setIsVideoReady(true);
             // Log stream info when camera starts (development only)
             if (import.meta.env.DEV) {
               const videoTrack = stream.getVideoTracks()[0];
               if (videoTrack) {
                 console.log('Video track constraints applied:', videoTrack.getConstraints());
+                console.log('Video track settings:', videoTrack.getSettings());
               }
             }
+            
+            // Try to optimize resolution after successful stream initialization
+            setTimeout(() => {
+              const videoTrack = stream.getVideoTracks()[0];
+              if (videoTrack) {
+                const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+                const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+                
+                // Apply higher resolution if not iOS Safari
+                if (!(isIOS && isSafari)) {
+                  videoTrack.applyConstraints({
+                    width: { ideal: 3840 },
+                    height: { ideal: 2160 }
+                  }).catch(err => {
+                    if (import.meta.env.DEV) {
+                      console.log('Could not apply higher resolution:', err);
+                    }
+                  });
+                }
+              }
+            }, 500);
           }}
           onUserMediaError={(error) => {
             console.error('Camera error:', error);
-            toast.error('Failed to access camera. Please check permissions.');
+            setIsVideoReady(false);
+            
+            const errorName = typeof error === 'string' ? error : (error as any)?.name || 'Unknown';
+            
+            if (errorName === 'NotAllowedError') {
+              toast.error('Camera permission denied. Please allow camera access and try again.');
+            } else if (errorName === 'NotFoundError') {
+              toast.error('No camera found. Please check your device.');
+            } else if (errorName === 'OverconstrainedError') {
+              toast.error('Camera constraints not supported. Trying with lower resolution...');
+              // The component will re-render with fallback constraints
+            } else {
+              toast.error('Failed to access camera. Please try again.');
+            }
           }}
         />
 
