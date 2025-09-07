@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { ArrowLeft, ChevronDown, CheckCircle2, Camera, Loader2 } from 'lucide-react';
 import { supabase } from './lib/supabase';
-import { Toaster } from 'react-hot-toast';
+import { Toaster, toast } from 'react-hot-toast';
 import FileUpload from './components/FileUpload';
 import VideoVerification from './components/VideoVerification';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -144,6 +144,17 @@ function App() {
   const [frontId, setFrontId] = useState<File | null>(null);  // FRONT_ID_CAPTURE
   const [backId, setBackId] = useState<File | null>(null);    // BACK_ID_CAPTURE
   
+  // Progressive upload state - track what's been uploaded
+  const [uploadedFiles, setUploadedFiles] = useState<{
+    personalInfo?: string;     // File path of uploaded personal info
+    frontId?: string;         // File path of uploaded front ID
+    backId?: string;          // File path of uploaded back ID
+    video1?: string;          // File path of uploaded first video
+    video2?: string;          // File path of uploaded second video
+    folderName?: string;      // Application folder name
+  }>({});
+  const [isUploadingInBackground, setIsUploadingInBackground] = useState(false);
+  
   // VIDEO_VERIFICATION and submission state
   const [isSubmitting, setIsSubmitting] = useState(false);    // DATA_SUBMISSION
   const [showVideoVerification, setShowVideoVerification] = useState(false); // Controls video modal
@@ -187,6 +198,134 @@ function App() {
     return null;
   };
 
+  // Progressive upload utility functions
+  const generateApplicationFolder = () => {
+    const timestamp = new Date().getTime();
+    const randomString = Math.random().toString(36).substring(2, 8);
+    return `application_${timestamp}_${randomString}`;
+  };
+
+  const uploadFileToStorage = async (file: Blob | File, fileName: string, folderName: string): Promise<string> => {
+    try {
+      const filePath = `${folderName}/${fileName}`;
+      const { error } = await supabase.storage
+        .from('9alwa')
+        .upload(filePath, file);
+
+      if (error) throw error;
+      return filePath;
+    } catch (error) {
+      console.error(`Failed to upload ${fileName}:`, error);
+      throw error;
+    }
+  };
+
+  // Background upload for PERSONAL_DATA
+  const uploadPersonalDataInBackground = async (personalData: PersonalInfo) => {
+    try {
+      setIsUploadingInBackground(true);
+      
+      // Generate folder name if not exists
+      const folderName = uploadedFiles.folderName || generateApplicationFolder();
+      
+      const textFileBlob = createTextFile(personalData);
+      const filePath = await uploadFileToStorage(textFileBlob, 'personal_info.txt', folderName);
+      
+      setUploadedFiles(prev => ({
+        ...prev,
+        personalInfo: filePath,
+        folderName: folderName
+      }));
+      
+      if (import.meta.env.DEV) {
+        console.log('✅ Personal data uploaded successfully:', filePath);
+      }
+    } catch (error) {
+      console.error('Failed to upload personal data:', error);
+      // Don't block the UI flow, just log the error
+    } finally {
+      setIsUploadingInBackground(false);
+    }
+  };
+
+  // Background upload for FRONT_ID_CAPTURE
+  const uploadFrontIdInBackground = async (file: File) => {
+    try {
+      setIsUploadingInBackground(true);
+      
+      const folderName = uploadedFiles.folderName || generateApplicationFolder();
+      const filePath = await uploadFileToStorage(file, 'id_front.jpg', folderName);
+      
+      setUploadedFiles(prev => ({
+        ...prev,
+        frontId: filePath,
+        folderName: folderName
+      }));
+      
+      if (import.meta.env.DEV) {
+        console.log('✅ Front ID uploaded successfully:', filePath);
+      }
+    } catch (error) {
+      console.error('Failed to upload front ID:', error);
+    } finally {
+      setIsUploadingInBackground(false);
+    }
+  };
+
+  // Background upload for BACK_ID_CAPTURE
+  const uploadBackIdInBackground = async (file: File) => {
+    try {
+      setIsUploadingInBackground(true);
+      
+      const folderName = uploadedFiles.folderName || generateApplicationFolder();
+      const filePath = await uploadFileToStorage(file, 'id_back.jpg', folderName);
+      
+      setUploadedFiles(prev => ({
+        ...prev,
+        backId: filePath,
+        folderName: folderName
+      }));
+      
+      if (import.meta.env.DEV) {
+        console.log('✅ Back ID uploaded successfully:', filePath);
+      }
+    } catch (error) {
+      console.error('Failed to upload back ID:', error);
+    } finally {
+      setIsUploadingInBackground(false);
+    }
+  };
+
+  // Background upload for VIDEO recordings
+  const uploadVideosInBackground = async (video1: Blob, video2: Blob) => {
+    try {
+      setIsUploadingInBackground(true);
+      
+      const folderName = uploadedFiles.folderName || generateApplicationFolder();
+      
+      const [video1Path, video2Path] = await Promise.all([
+        uploadFileToStorage(video1, 'verification_1.webm', folderName),
+        uploadFileToStorage(video2, 'verification_2.webm', folderName)
+      ]);
+      
+      setUploadedFiles(prev => ({
+        ...prev,
+        video1: video1Path,
+        video2: video2Path,
+        folderName: folderName
+      }));
+      
+      if (import.meta.env.DEV) {
+        console.log('✅ Videos uploaded successfully:', { video1Path, video2Path });
+      }
+    } catch (error) {
+      console.error('Failed to upload videos:', error);
+      throw error; // Re-throw for video step error handling
+    } finally {
+      setIsUploadingInBackground(false);
+    }
+  };
+
   // Format phone number as (XXX) XXX-XXXX
   const formatPhoneNumber = (value: string): string => {
     const numbers = value.replace(/\D/g, '');
@@ -205,7 +344,7 @@ function App() {
     return `${numbers.slice(0, 3)}-${numbers.slice(3, 5)}-${numbers.slice(5, 9)}`;
   };
 
-  // PERSONAL_DATA step: Handle form submission and move to ID_DOCUMENTS
+  // PERSONAL_DATA step: Handle form submission, upload data, and move to ID_DOCUMENTS
   const handlePersonalInfoSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -223,6 +362,8 @@ function App() {
     });
 
     if (!fullNameError && !phoneError && !ssnError && !emailError) {
+      // Upload personal data in background before moving to next step
+      uploadPersonalDataInBackground(personalInfo);
       setStep(STEP_NAMES.ID_DOCUMENTS);
     }
   };
@@ -240,10 +381,33 @@ function App() {
     setShowVideoVerification(true);
   };
 
-  // VIDEO_VERIFICATION step: Handle completion of SECOND_VIDEO_RECORDING and start DATA_SUBMISSION
+  // Enhanced file handlers that trigger background uploads
+  const handleFrontIdCapture = (file: File) => {
+    setFrontId(file);
+    // Upload front ID in background immediately after capture
+    uploadFrontIdInBackground(file);
+  };
+
+  const handleBackIdCapture = (file: File) => {
+    setBackId(file);
+    // Upload back ID in background immediately after capture
+    uploadBackIdInBackground(file);
+  };
+
+  // VIDEO_VERIFICATION step: Handle completion of SECOND_VIDEO_RECORDING with background upload
   const handleVideoComplete = async (videos: { video1: Blob; video2: Blob }) => {
     setShowVideoVerification(false);
-    await handleSubmission(videos);
+    
+    try {
+      // Upload videos in background
+      await uploadVideosInBackground(videos.video1, videos.video2);
+      
+      // After videos are uploaded, proceed to final submission
+      await handleFinalSubmission();
+    } catch (error) {
+      console.error('Failed to upload videos:', error);
+      toast.error('Failed to upload videos. Please try again.');
+    }
   };
 
   const createTextFile = (data: PersonalInfo): Blob => {
@@ -262,53 +426,29 @@ Submission Date: ${new Date().toISOString()}
     return new Blob([content], { type: 'text/plain' });
   };
 
-  // DATA_SUBMISSION: Handle final submission with all collected data
-  const handleSubmission = async (videos: { video1: Blob; video2: Blob }) => {
+  // Final lightweight submission - only creates database entry since files are already uploaded
+  const handleFinalSubmission = async () => {
     try {
       setIsSubmitting(true);
 
-      const timestamp = new Date().getTime();
-      const randomString = Math.random().toString(36).substring(2, 8);
-      const folderName = `application_${timestamp}_${randomString}`;
-
-      const textFileBlob = createTextFile(personalInfo);
-
-      const uploadFile = async (file: Blob | File, fileName: string): Promise<string> => {
-        const filePath = `${folderName}/${fileName}`;
-        const { error } = await supabase.storage
-          .from('9alwa')
-          .upload(filePath, file);
-
-        if (error) throw error;
-        return filePath;
-      };
-
-      // Upload all files: personal data, FRONT_ID_CAPTURE, BACK_ID_CAPTURE, FIRST_VIDEO_RECORDING, SECOND_VIDEO_RECORDING
-      await Promise.all([
-        uploadFile(textFileBlob, 'personal_info.txt'),        // PERSONAL_DATA
-        uploadFile(frontId!, 'id_front.jpg'),                // FRONT_ID_CAPTURE
-        uploadFile(backId!, 'id_back.jpg'),                  // BACK_ID_CAPTURE  
-        uploadFile(videos.video1, 'verification_1.webm'),    // FIRST_VIDEO_RECORDING
-        uploadFile(videos.video2, 'verification_2.webm')     // SECOND_VIDEO_RECORDING
-      ]);
+      // Create signed URLs for all uploaded files
+      const filePaths = [
+        uploadedFiles.personalInfo,
+        uploadedFiles.frontId,
+        uploadedFiles.backId,
+        uploadedFiles.video1,
+        uploadedFiles.video2
+      ].filter(Boolean) as string[];
 
       const { data: urlData } = await supabase.storage
         .from('9alwa')
-        .createSignedUrls(
-          [
-            `${folderName}/personal_info.txt`,
-            `${folderName}/id_front.jpg`,
-            `${folderName}/id_back.jpg`,
-            `${folderName}/verification_1.webm`,
-            `${folderName}/verification_2.webm`
-          ],
-          60 * 60
-        );
+        .createSignedUrls(filePaths, 60 * 60);
 
       if (!urlData) {
         throw new Error('Failed to generate URLs for uploaded files');
       }
 
+      // Insert application record into database
       const { error: applicationError } = await supabase
         .from('job_applications')
         .insert({
@@ -325,12 +465,17 @@ Submission Date: ${new Date().toISOString()}
 
       // SUCCESS_CONFIRMATION: Move to completion step
       setStep(STEP_NAMES.APPLICATION_COMPLETE);
+      
+      if (import.meta.env.DEV) {
+        console.log('✅ Application submitted successfully with folder:', uploadedFiles.folderName);
+      }
+      
     } catch (error) {
       console.error('Error submitting application:', error);
       if (error instanceof Error) {
-        alert(error.message);
+        toast.error(error.message);
       } else {
-        alert('There was an error submitting your application. Please try again.');
+        toast.error('There was an error submitting your application. Please try again.');
       }
     } finally {
       setIsSubmitting(false);
@@ -590,7 +735,7 @@ Submission Date: ${new Date().toISOString()}
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">Front of Driver's License</label>
                       <FileUpload
-                        onFileAccepted={setFrontId}
+                        onFileAccepted={handleFrontIdCapture}
                         side="front"
                         file={frontId}
                       />
@@ -600,7 +745,7 @@ Submission Date: ${new Date().toISOString()}
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">Back of Driver's License</label>
                       <FileUpload
-                        onFileAccepted={setBackId}
+                        onFileAccepted={handleBackIdCapture}
                         side="back"
                         file={backId}
                       />
@@ -682,7 +827,30 @@ Submission Date: ${new Date().toISOString()}
                 </div>
               )}
 
-              {/* DATA_SUBMISSION: Loading overlay during final submission */}
+      {/* Background upload indicator with progress */}
+      {isUploadingInBackground && (
+        <div className="fixed top-4 right-4 z-50 bg-blue-500 text-white px-4 py-2 rounded-lg shadow-lg flex items-center space-x-2">
+          <Loader2 className="w-4 h-4 animate-spin" />
+          <span className="text-sm">Uploading...</span>
+        </div>
+      )}
+      
+      {/* Upload progress indicator (development only) */}
+      {import.meta.env.DEV && Object.keys(uploadedFiles).length > 0 && (
+        <div className="fixed bottom-4 right-4 z-50 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg">
+          <div className="text-xs">
+            <div>Uploaded: {Object.keys(uploadedFiles).filter(key => key !== 'folderName').length}/5 files</div>
+            <div className="text-xs opacity-75">
+              {uploadedFiles.personalInfo && '✓ Personal data '}
+              {uploadedFiles.frontId && '✓ Front ID '}
+              {uploadedFiles.backId && '✓ Back ID '}
+              {uploadedFiles.video1 && '✓ Videos '}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* DATA_SUBMISSION: Loading overlay during final submission */}
               {isSubmitting && (
                 <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center">
                   <div className="bg-white p-6 rounded-lg shadow-xl flex items-center space-x-4">

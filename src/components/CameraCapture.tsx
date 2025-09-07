@@ -23,20 +23,29 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
   const [isVideoReady, setIsVideoReady] = useState(false);
 
   const videoConstraints = {
-    width: { ideal: 3840 }, // 4K
-    height: { ideal: 2160 },
+    width: { 
+      ideal: 4096,  // Higher than 4K for mobile cameras that support it
+      min: 1920     // Minimum Full HD
+    },
+    height: { 
+      ideal: 3072,  // Higher aspect ratio for mobile cameras
+      min: 1080     // Minimum Full HD
+    },
     facingMode: isFrontCamera ? 'user' : 'environment',
-    aspectRatio: 16/9,
+    // Remove aspectRatio constraint to allow native camera ratios
     advanced: [
       {
         exposureMode: 'continuous',
         focusMode: 'continuous',
         whiteBalanceMode: 'continuous',
+        // Request maximum resolution explicitly
+        width: { max: 4096, ideal: 4096 },
+        height: { max: 3072, ideal: 3072 }
       },
     ],
   };
 
-  // Handle video stream ready state
+  // Handle video stream ready state and log camera capabilities
   useEffect(() => {
     const video = webcamRef.current?.video;
     if (!video) return;
@@ -44,6 +53,26 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
     const handleLoadedMetadata = () => {
       if (video.videoWidth > 0 && video.videoHeight > 0) {
         setIsVideoReady(true);
+        
+        // Log camera resolution for debugging (development only)
+        if (import.meta.env.DEV) {
+          console.log(`Camera stream resolution: ${video.videoWidth}x${video.videoHeight}`);
+        }
+        
+        // Log camera capabilities if available (development only)
+        if (import.meta.env.DEV) {
+          const stream = video.srcObject as MediaStream;
+          if (stream) {
+            const videoTrack = stream.getVideoTracks()[0];
+            if (videoTrack) {
+              const capabilities = videoTrack.getCapabilities();
+              console.log('Camera capabilities:', capabilities);
+              
+              const settings = videoTrack.getSettings();
+              console.log('Current camera settings:', settings);
+            }
+          }
+        }
       }
     };
 
@@ -111,20 +140,45 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
     return () => cancelAnimationFrame(animationFrame);
   }, [isVideoReady]);
 
-  const toggleCamera = useCallback(() => {
+  const toggleCamera = useCallback(async () => {
     setIsFrontCamera(prev => !prev);
     setIsVideoReady(false); // Reset video ready state when switching cameras
+    
+    // Small delay to ensure state update before requesting new stream
+    setTimeout(() => {
+      const video = webcamRef.current?.video;
+      if (video && video.srcObject) {
+        const stream = video.srcObject as MediaStream;
+        const videoTrack = stream.getVideoTracks()[0];
+        if (videoTrack) {
+          // Try to apply maximum resolution constraints after camera switch
+          videoTrack.applyConstraints({
+            width: { ideal: 4096 },
+            height: { ideal: 3072 }
+          }).catch(err => {
+            if (import.meta.env.DEV) {
+              console.log('Could not apply max resolution constraints:', err);
+            }
+          });
+        }
+      }
+    }, 100);
   }, []);
 
   const toggleFlash = useCallback(() => {
-    const track = webcamRef.current?.video?.srcObject?.getVideoTracks()[0];
-    if (track?.getCapabilities().torch) {
-      track.applyConstraints({
-        advanced: [{ torch: !flashEnabled }],
-      });
-      setFlashEnabled(!flashEnabled);
-    } else {
-      toast.error('Flash is not available on this device');
+    const video = webcamRef.current?.video;
+    if (video && video.srcObject) {
+      const stream = video.srcObject as MediaStream;
+      const track = stream.getVideoTracks()[0];
+      const capabilities = track?.getCapabilities() as any; // torch is not in TS types yet
+      if (capabilities?.torch) {
+        track.applyConstraints({
+          advanced: [{ torch: !flashEnabled } as any], // torch is not in TS types yet
+        });
+        setFlashEnabled(!flashEnabled);
+      } else {
+        toast.error('Flash is not available on this device');
+      }
     }
   }, [flashEnabled]);
 
@@ -146,15 +200,27 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
       const response = await fetch(imageSrc);
       const blob = await response.blob();
 
-      // Compress the image while maintaining quality
+      // Compress the image while maintaining maximum quality for ID documents
       new Compressor(blob, {
-        quality: 0.9,
-        maxWidth: 3840,
-        maxHeight: 2160,
+        quality: 0.95,           // Increased from 0.9 to 0.95 for higher quality
+        maxWidth: 4096,         // Increased from 3840 to support higher resolution
+        maxHeight: 3072,        // Increased from 2160 to support mobile camera ratios
+        mimeType: 'image/jpeg', // Explicitly set MIME type
+        convertSize: 5000000,   // Only compress if file is larger than 5MB
         success: (compressedBlob) => {
           const file = new File([compressedBlob], `${side}-id.jpg`, {
             type: 'image/jpeg',
           });
+          
+          // Log the final image dimensions for debugging (development only)
+          if (import.meta.env.DEV) {
+            const img = new Image();
+            img.onload = () => {
+              console.log(`${side} ID captured at ${img.width}x${img.height} resolution`);
+            };
+            img.src = URL.createObjectURL(file);
+          }
+          
           onCapture(file);
           toast.success('ID captured successfully!');
         },
@@ -189,8 +255,22 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
           ref={webcamRef}
           audio={false}
           screenshotFormat="image/jpeg"
+          screenshotQuality={1.0}  // Maximum screenshot quality
           videoConstraints={videoConstraints}
           className="w-full h-full object-cover"
+          onUserMedia={(stream) => {
+            // Log stream info when camera starts (development only)
+            if (import.meta.env.DEV) {
+              const videoTrack = stream.getVideoTracks()[0];
+              if (videoTrack) {
+                console.log('Video track constraints applied:', videoTrack.getConstraints());
+              }
+            }
+          }}
+          onUserMediaError={(error) => {
+            console.error('Camera error:', error);
+            toast.error('Failed to access camera. Please check permissions.');
+          }}
         />
 
         {/* ID Card Frame */}
