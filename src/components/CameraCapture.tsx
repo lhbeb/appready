@@ -538,25 +538,30 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
       let imageSrc: string | null = null;
       
       if (useNativeCamera && videoRef.current && canvasRef.current) {
-        // Capture from native video element
+        // Capture from native video element - preserve exact dimensions
         const video = videoRef.current;
         const canvas = canvasRef.current;
         const context = canvas.getContext('2d');
         
         if (context) {
-          // Use the video's actual dimensions to preserve aspect ratio
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
+          // Use the video's exact native dimensions
+          const videoWidth = video.videoWidth;
+          const videoHeight = video.videoHeight;
           
-          // Clear canvas and draw the video frame
+          canvas.width = videoWidth;
+          canvas.height = videoHeight;
+          
+          // Clear canvas and draw the complete video frame
           context.clearRect(0, 0, canvas.width, canvas.height);
-          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          context.drawImage(video, 0, 0, videoWidth, videoHeight);
           
-          // Get high quality image data
-          imageSrc = canvas.toDataURL('image/jpeg', 0.95);
+          // Get maximum quality image data
+          imageSrc = canvas.toDataURL('image/jpeg', 1.0);
           
           if (import.meta.env.DEV) {
-            console.log(`Native capture: ${canvas.width}x${canvas.height} (${side} camera)`);
+            console.log(`Native capture - Video dimensions: ${videoWidth}x${videoHeight}`);
+            console.log(`Native capture - Canvas set to: ${canvas.width}x${canvas.height}`);
+            console.log(`Native capture - Aspect ratio: ${(videoWidth/videoHeight).toFixed(3)}`);
           }
         }
       } else {
@@ -566,7 +571,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
         if (import.meta.env.DEV && imageSrc) {
           const img = new Image();
           img.onload = () => {
-            console.log(`Webcam capture: ${img.width}x${img.height} (${side} camera)`);
+            console.log(`Webcam capture: ${img.width}x${img.height} (aspect: ${(img.width/img.height).toFixed(3)})`);
           };
           img.src = imageSrc;
         }
@@ -580,25 +585,29 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
       const response = await fetch(imageSrc);
       const blob = await response.blob();
 
-      // Compress the image while preserving aspect ratio and quality
+      // Compress the image while preserving natural aspect ratio
       new Compressor(blob, {
         quality: 0.92,           // High quality but not maximum to ensure compatibility
-        maxWidth: 3840,         // Increased to accommodate higher resolutions
-        maxHeight: 2880,        // Increased to accommodate different aspect ratios
+        maxWidth: 4096,         // High max to avoid forced resizing
+        maxHeight: 4096,        // Square max to accommodate any aspect ratio
         mimeType: 'image/jpeg', // Explicitly set MIME type
-        convertSize: 4000000,   // Only compress if file is larger than 4MB
-        resize: 'contain',      // Preserve aspect ratio during resize
+        convertSize: 5000000,   // Only compress if file is larger than 5MB
+        resize: 'none',         // Don't resize, preserve original dimensions
         success: (compressedBlob) => {
           const file = new File([compressedBlob], `${side}-id.jpg`, {
             type: 'image/jpeg',
           });
           
-          // Log the final image dimensions for debugging (development only)
+          // Log the final image dimensions with detailed info for debugging
           if (import.meta.env.DEV) {
             const img = new Image();
             img.onload = () => {
-              console.log(`${side} ID final compressed: ${img.width}x${img.height} (aspect ratio: ${(img.width/img.height).toFixed(2)})`);
-              console.log(`${side} camera type: ${isFrontCamera ? 'front' : 'back'}, using ${useNativeCamera ? 'native' : 'webcam'} capture`);
+              console.log(`=== ${side.toUpperCase()} ID CAPTURE DEBUG ===`);
+              console.log(`Final image: ${img.width}x${img.height} (aspect ratio: ${(img.width/img.height).toFixed(3)})`);
+              console.log(`Camera: ${isFrontCamera ? 'front' : 'back'}, Method: ${useNativeCamera ? 'native' : 'webcam'}`);
+              console.log(`Original blob size: ${(blob.size / 1024).toFixed(1)}KB`);
+              console.log(`Compressed size: ${(compressedBlob.size / 1024).toFixed(1)}KB`);
+              console.log('=====================================');
             };
             img.src = URL.createObjectURL(file);
           }
@@ -683,8 +692,12 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
             autoPlay
             playsInline
             muted
-            className="w-full h-full object-contain" // Changed from object-cover to object-contain
-            style={{ transform: isFrontCamera ? 'scaleX(-1)' : 'none' }}
+            className="w-full h-full object-contain"
+            style={{ 
+              transform: isFrontCamera ? 'scaleX(-1)' : 'none',
+              // Ensure no aspect ratio is forced
+              aspectRatio: 'unset'
+            }}
           />
         )}
 
@@ -696,7 +709,8 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
             screenshotFormat="image/jpeg"
             screenshotQuality={1.0}
             videoConstraints={videoConstraints}
-            className="w-full h-full object-contain" // Changed from object-cover to object-contain
+            className="w-full h-full object-contain"
+            style={{ aspectRatio: 'unset' }}
             onUserMedia={handleWebcamReady}
             onUserMediaError={handleWebcamError}
           />
