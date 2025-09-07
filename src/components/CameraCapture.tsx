@@ -36,38 +36,45 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
     canCapture: boolean;
   }>({ level: 'fair', message: 'Analyzing...', canCapture: false });
 
-  // Multiple constraint sets for maximum compatibility
+  // Multiple constraint sets with FORCED 16:9 aspect ratio
   const getConstraintSets = () => {
     const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
     const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
     
     return [
-      // Try 1: High resolution without forced aspect ratio
+      // Try 1: High resolution with FORCED 16:9 aspect ratio
       {
         video: {
           facingMode: isFrontCamera ? 'user' : 'environment',
           width: { ideal: 1920, max: 1920 },
-          height: { ideal: 1080, max: 1080 }
-          // Removed aspectRatio to allow native camera ratios
+          height: { ideal: 1080, max: 1080 },
+          aspectRatio: { exact: 16/9 } // FORCE 16:9 ratio
         }
       },
-      // Try 2: Medium resolution
+      // Try 2: Medium resolution with FORCED 16:9
       {
         video: {
           facingMode: isFrontCamera ? 'user' : 'environment',
           width: { ideal: 1280 },
-          height: { ideal: 720 }
+          height: { ideal: 720 },
+          aspectRatio: { exact: 16/9 } // FORCE 16:9 ratio
         }
       },
-      // Try 3: Basic with facingMode only
+      // Try 3: Lower resolution with FORCED 16:9
       {
         video: {
-          facingMode: isFrontCamera ? 'user' : 'environment'
+          facingMode: isFrontCamera ? 'user' : 'environment',
+          width: { ideal: 1024 },
+          height: { ideal: 576 },
+          aspectRatio: { exact: 16/9 } // FORCE 16:9 ratio
         }
       },
-      // Try 4: Last resort
+      // Try 4: Minimum with FORCED 16:9
       {
-        video: true
+        video: {
+          facingMode: isFrontCamera ? 'user' : 'environment',
+          aspectRatio: { exact: 16/9 } // FORCE 16:9 ratio
+        }
       }
     ];
   };
@@ -155,13 +162,13 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
     }
   }, [isFrontCamera]);
 
-  // Webcam constraints for react-webcam fallback
+  // Webcam constraints with FORCED 16:9 aspect ratio
   const getWebcamConstraints = () => {
     return {
       width: { ideal: 1920, min: 640 },
-      height: { ideal: 1080, min: 480 },
+      height: { ideal: 1080, min: 360 },
       facingMode: isFrontCamera ? 'user' : 'environment',
-      // Removed aspectRatio to allow native camera ratios
+      aspectRatio: { exact: 16/9 }, // FORCE 16:9 ratio for all cameras
     };
   };
 
@@ -538,40 +545,69 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
       let imageSrc: string | null = null;
       
       if (useNativeCamera && videoRef.current && canvasRef.current) {
-        // Capture from native video element - preserve exact dimensions
+        // Capture from native video element - FORCE 16:9 aspect ratio
         const video = videoRef.current;
         const canvas = canvasRef.current;
         const context = canvas.getContext('2d');
         
         if (context) {
-          // Use the video's exact native dimensions
+          // Get video dimensions
           const videoWidth = video.videoWidth;
           const videoHeight = video.videoHeight;
+          const videoAspectRatio = videoWidth / videoHeight;
           
-          canvas.width = videoWidth;
-          canvas.height = videoHeight;
+          // Calculate 16:9 crop dimensions
+          const targetAspectRatio = 16 / 9;
+          let cropWidth, cropHeight, cropX, cropY;
           
-          // Clear canvas and draw the complete video frame
+          if (videoAspectRatio > targetAspectRatio) {
+            // Video is wider than 16:9, crop horizontally
+            cropHeight = videoHeight;
+            cropWidth = videoHeight * targetAspectRatio;
+            cropX = (videoWidth - cropWidth) / 2;
+            cropY = 0;
+          } else {
+            // Video is taller than 16:9, crop vertically
+            cropWidth = videoWidth;
+            cropHeight = videoWidth / targetAspectRatio;
+            cropX = 0;
+            cropY = (videoHeight - cropHeight) / 2;
+          }
+          
+          // Set canvas to 16:9 ratio with high resolution
+          const outputWidth = 1920;
+          const outputHeight = 1080;
+          canvas.width = outputWidth;
+          canvas.height = outputHeight;
+          
+          // Clear canvas and draw cropped video frame
           context.clearRect(0, 0, canvas.width, canvas.height);
-          context.drawImage(video, 0, 0, videoWidth, videoHeight);
+          context.drawImage(
+            video,
+            cropX, cropY, cropWidth, cropHeight, // Source crop area
+            0, 0, outputWidth, outputHeight       // Destination size
+          );
           
           // Get maximum quality image data
           imageSrc = canvas.toDataURL('image/jpeg', 1.0);
           
           if (import.meta.env.DEV) {
-            console.log(`Native capture - Video dimensions: ${videoWidth}x${videoHeight}`);
-            console.log(`Native capture - Canvas set to: ${canvas.width}x${canvas.height}`);
-            console.log(`Native capture - Aspect ratio: ${(videoWidth/videoHeight).toFixed(3)}`);
+            console.log(`=== ${side.toUpperCase()} NATIVE CAPTURE (FORCED 16:9) ===`);
+            console.log(`Video dimensions: ${videoWidth}x${videoHeight} (${videoAspectRatio.toFixed(3)})`);
+            console.log(`Crop area: ${cropWidth.toFixed(0)}x${cropHeight.toFixed(0)} at (${cropX.toFixed(0)}, ${cropY.toFixed(0)})`);
+            console.log(`Output: ${outputWidth}x${outputHeight} (${(outputWidth/outputHeight).toFixed(3)})`);
           }
         }
       } else {
-        // Capture from react-webcam
+        // Capture from react-webcam - should already be 16:9 due to constraints
         imageSrc = webcamRef.current?.getScreenshot() || null;
         
         if (import.meta.env.DEV && imageSrc) {
           const img = new Image();
           img.onload = () => {
-            console.log(`Webcam capture: ${img.width}x${img.height} (aspect: ${(img.width/img.height).toFixed(3)})`);
+            console.log(`=== ${side.toUpperCase()} WEBCAM CAPTURE ===`);
+            console.log(`Webcam dimensions: ${img.width}x${img.height}`);
+            console.log(`Aspect ratio: ${(img.width/img.height).toFixed(3)} (should be 1.778 for 16:9)`);
           };
           img.src = imageSrc;
         }
@@ -585,47 +621,137 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
       const response = await fetch(imageSrc);
       const blob = await response.blob();
 
-      // Compress the image while preserving natural aspect ratio
-      new Compressor(blob, {
-        quality: 0.92,           // High quality but not maximum to ensure compatibility
-        maxWidth: 4096,         // High max to avoid forced resizing
-        maxHeight: 4096,        // Square max to accommodate any aspect ratio
-        mimeType: 'image/jpeg', // Explicitly set MIME type
-        convertSize: 5000000,   // Only compress if file is larger than 5MB
-        resize: 'none',         // Don't resize, preserve original dimensions
-        success: (compressedBlob) => {
-          const file = new File([compressedBlob], `${side}-id.jpg`, {
-            type: 'image/jpeg',
-          });
-          
-          // Log the final image dimensions with detailed info for debugging
-          if (import.meta.env.DEV) {
-            const img = new Image();
-            img.onload = () => {
-              console.log(`=== ${side.toUpperCase()} ID CAPTURE DEBUG ===`);
-              console.log(`Final image: ${img.width}x${img.height} (aspect ratio: ${(img.width/img.height).toFixed(3)})`);
-              console.log(`Camera: ${isFrontCamera ? 'front' : 'back'}, Method: ${useNativeCamera ? 'native' : 'webcam'}`);
-              console.log(`Original blob size: ${(blob.size / 1024).toFixed(1)}KB`);
-              console.log(`Compressed size: ${(compressedBlob.size / 1024).toFixed(1)}KB`);
-              console.log('=====================================');
-            };
-            img.src = URL.createObjectURL(file);
-          }
-          
-          onCapture(file);
-          toast.success('ID captured successfully!');
-        },
-        error: (err) => {
-          throw err;
-        },
-      });
+      // Detect Safari on iPhone for special handling
+      const isIOSSafari = /iPad|iPhone|iPod/.test(navigator.userAgent) && /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+      
+      // Function to ensure 16:9 aspect ratio
+      const ensureSixteenByNine = async (inputBlob: Blob): Promise<Blob> => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const currentRatio = img.width / img.height;
+            const targetRatio = 16 / 9;
+            
+            // If already 16:9 (within tolerance), return original
+            if (Math.abs(currentRatio - targetRatio) < 0.01) {
+              resolve(inputBlob);
+              return;
+            }
+            
+            // Need to crop to 16:9
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d')!;
+            
+            let cropWidth, cropHeight, cropX, cropY;
+            
+            if (currentRatio > targetRatio) {
+              // Image is wider, crop horizontally
+              cropHeight = img.height;
+              cropWidth = img.height * targetRatio;
+              cropX = (img.width - cropWidth) / 2;
+              cropY = 0;
+            } else {
+              // Image is taller, crop vertically
+              cropWidth = img.width;
+              cropHeight = img.width / targetRatio;
+              cropX = 0;
+              cropY = (img.height - cropHeight) / 2;
+            }
+            
+            // Set output to 16:9 high resolution
+            canvas.width = 1920;
+            canvas.height = 1080;
+            
+            ctx.drawImage(
+              img,
+              cropX, cropY, cropWidth, cropHeight,
+              0, 0, 1920, 1080
+            );
+            
+            canvas.toBlob((result) => {
+              if (import.meta.env.DEV) {
+                console.log(`FORCED 16:9 CORRECTION: ${img.width}x${img.height} (${currentRatio.toFixed(3)}) -> 1920x1080 (1.778)`);
+              }
+              resolve(result || inputBlob);
+            }, 'image/jpeg', 0.95);
+          };
+          img.src = URL.createObjectURL(inputBlob);
+        });
+      };
+      
+      if (isIOSSafari) {
+        // For iOS Safari, ensure 16:9 aspect ratio
+        const correctedBlob = await ensureSixteenByNine(blob);
+        const file = new File([correctedBlob], `${side}-id.jpg`, {
+          type: 'image/jpeg',
+        });
+        
+        if (import.meta.env.DEV) {
+          const img = new Image();
+          img.onload = () => {
+            console.log(`=== ${side.toUpperCase()} iOS SAFARI FINAL (FORCED 16:9) ===`);
+            console.log(`Final dimensions: ${img.width}x${img.height}`);
+            console.log(`Final aspect ratio: ${(img.width/img.height).toFixed(3)} (target: 1.778)`);
+            console.log(`File size: ${(file.size / 1024).toFixed(1)}KB`);
+            console.log(`Camera: ${isFrontCamera ? 'front' : 'back'}, Method: ${useNativeCamera ? 'native' : 'webcam'}`);
+            console.log('GUARANTEED 16:9 RATIO');
+            console.log('=====================================');
+          };
+          img.src = URL.createObjectURL(file);
+        }
+        
+        onCapture(file);
+        toast.success('ID captured successfully!');
+      } else {
+        // For other browsers, ensure 16:9 and use minimal compression
+        const correctedBlob = await ensureSixteenByNine(blob);
+        new Compressor(correctedBlob, {
+          quality: 0.95,          // Very high quality
+          mimeType: 'image/jpeg',
+          convertSize: 10000000,  // Very high threshold to avoid compression
+          resize: 'none',        // Explicitly no resizing
+          checkOrientation: false, // Don't auto-rotate
+          success: (compressedBlob) => {
+            const file = new File([compressedBlob], `${side}-id.jpg`, {
+              type: 'image/jpeg',
+            });
+            
+            if (import.meta.env.DEV) {
+              const img = new Image();
+              img.onload = () => {
+                console.log(`=== ${side.toUpperCase()} NON-iOS FINAL (FORCED 16:9) ===`);
+                console.log(`Final dimensions: ${img.width}x${img.height}`);
+                console.log(`Final aspect ratio: ${(img.width/img.height).toFixed(3)} (target: 1.778)`);
+                console.log(`Original size: ${(blob.size / 1024).toFixed(1)}KB`);
+                console.log(`Compressed size: ${(file.size / 1024).toFixed(1)}KB`);
+                console.log(`Camera: ${isFrontCamera ? 'front' : 'back'}, Method: ${useNativeCamera ? 'native' : 'webcam'}`);
+                console.log('GUARANTEED 16:9 RATIO');
+                console.log('=====================================');
+              };
+              img.src = URL.createObjectURL(file);
+            }
+            
+            onCapture(file);
+            toast.success('ID captured successfully!');
+          },
+          error: (err) => {
+            console.error('Compression error, using corrected original:', err);
+            // Fallback to corrected blob if compression fails
+            const file = new File([correctedBlob], `${side}-id.jpg`, {
+              type: 'image/jpeg',
+            });
+            onCapture(file);
+            toast.success('ID captured successfully!');
+          },
+        });
+      }
     } catch (error) {
       toast.error('Failed to capture image. Please try again.');
       console.error('Capture error:', error);
     } finally {
       setIsCapturing(false);
     }
-  }, [onCapture, side, isCardDetected, isVideoReady, useNativeCamera, forceCapture]);
+  }, [onCapture, side, isCardDetected, isVideoReady, useNativeCamera, forceCapture, lightingQuality, isFrontCamera]);
 
   // Show initial guide for 3 seconds
   useEffect(() => {
@@ -692,11 +818,13 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
             autoPlay
             playsInline
             muted
-            className="w-full h-full object-contain"
+            className="w-full h-full"
             style={{ 
               transform: isFrontCamera ? 'scaleX(-1)' : 'none',
-              // Ensure no aspect ratio is forced
-              aspectRatio: 'unset'
+              objectFit: 'cover', // Cover to fill 16:9 container
+              aspectRatio: '16/9', // Force 16:9 display
+              maxWidth: '100%',
+              maxHeight: '100%'
             }}
           />
         )}
@@ -709,8 +837,13 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
             screenshotFormat="image/jpeg"
             screenshotQuality={1.0}
             videoConstraints={videoConstraints}
-            className="w-full h-full object-contain"
-            style={{ aspectRatio: 'unset' }}
+            className="w-full h-full"
+            style={{ 
+              objectFit: 'cover', // Cover to fill 16:9 container
+              aspectRatio: '16/9', // Force 16:9 display
+              maxWidth: '100%',
+              maxHeight: '100%'
+            }}
             onUserMedia={handleWebcamReady}
             onUserMediaError={handleWebcamError}
           />
