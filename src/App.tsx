@@ -63,6 +63,33 @@ const ProgressLine = ({
 
 type FormStep = 'personal' | 'documents' | 'video' | 'complete';
 
+// Step identifiers for easier debugging and reference
+const STEP_NAMES = {
+  PERSONAL_DATA: 'personal' as const,
+  ID_DOCUMENTS: 'documents' as const,
+  VIDEO_VERIFICATION: 'video' as const,
+  APPLICATION_COMPLETE: 'complete' as const
+} as const;
+
+// Sub-step identifiers within each main step
+const SUB_STEPS = {
+  // Personal data collection
+  PERSONAL_INFO_FORM: 'personal_info_form',
+  
+  // ID documents capture
+  FRONT_ID_CAPTURE: 'front_id_capture',
+  BACK_ID_CAPTURE: 'back_id_capture',
+  
+  // Video verification process
+  FIRST_VIDEO_RECORDING: 'first_video_recording',
+  VIDEO_ERROR_DISPLAY: 'video_error_display', 
+  SECOND_VIDEO_RECORDING: 'second_video_recording',
+  
+  // Final submission
+  DATA_SUBMISSION: 'data_submission',
+  SUCCESS_CONFIRMATION: 'success_confirmation'
+} as const;
+
 interface PersonalInfo {
   firstName: string;
   lastName: string;
@@ -92,7 +119,10 @@ const STATES = [
 ];
 
 function App() {
-  const [step, setStep] = useState<FormStep>('personal');
+  // Main step state - controls which major section is shown
+  const [step, setStep] = useState<FormStep>(STEP_NAMES.PERSONAL_DATA);
+  
+  // PERSONAL_DATA step state
   const [personalInfo, setPersonalInfo] = useState<PersonalInfo>({
     firstName: '',
     lastName: '',
@@ -109,10 +139,14 @@ function App() {
     ssn: null,
     email: null
   });
-  const [frontId, setFrontId] = useState<File | null>(null);
-  const [backId, setBackId] = useState<File | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showVideoVerification, setShowVideoVerification] = useState(false);
+  
+  // ID_DOCUMENTS step state
+  const [frontId, setFrontId] = useState<File | null>(null);  // FRONT_ID_CAPTURE
+  const [backId, setBackId] = useState<File | null>(null);    // BACK_ID_CAPTURE
+  
+  // VIDEO_VERIFICATION and submission state
+  const [isSubmitting, setIsSubmitting] = useState(false);    // DATA_SUBMISSION
+  const [showVideoVerification, setShowVideoVerification] = useState(false); // Controls video modal
 
   const steps: FormStep[] = ['personal', 'documents', 'video', 'complete'];
   const currentStepIndex = steps.indexOf(step);
@@ -171,6 +205,7 @@ function App() {
     return `${numbers.slice(0, 3)}-${numbers.slice(3, 5)}-${numbers.slice(5, 9)}`;
   };
 
+  // PERSONAL_DATA step: Handle form submission and move to ID_DOCUMENTS
   const handlePersonalInfoSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -188,21 +223,24 @@ function App() {
     });
 
     if (!fullNameError && !phoneError && !ssnError && !emailError) {
-      setStep('documents');
+      setStep(STEP_NAMES.ID_DOCUMENTS);
     }
   };
 
+  // ID_DOCUMENTS step: Handle both FRONT_ID_CAPTURE and BACK_ID_CAPTURE completion
   const handleDocumentsSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (frontId && backId) {
-      setStep('video');
+      setStep(STEP_NAMES.VIDEO_VERIFICATION);
     }
   };
 
+  // VIDEO_VERIFICATION step: Start FIRST_VIDEO_RECORDING
   const startRecording = () => {
     setShowVideoVerification(true);
   };
 
+  // VIDEO_VERIFICATION step: Handle completion of SECOND_VIDEO_RECORDING and start DATA_SUBMISSION
   const handleVideoComplete = async (videos: { video1: Blob; video2: Blob }) => {
     setShowVideoVerification(false);
     await handleSubmission(videos);
@@ -224,6 +262,7 @@ Submission Date: ${new Date().toISOString()}
     return new Blob([content], { type: 'text/plain' });
   };
 
+  // DATA_SUBMISSION: Handle final submission with all collected data
   const handleSubmission = async (videos: { video1: Blob; video2: Blob }) => {
     try {
       setIsSubmitting(true);
@@ -244,12 +283,13 @@ Submission Date: ${new Date().toISOString()}
         return filePath;
       };
 
+      // Upload all files: personal data, FRONT_ID_CAPTURE, BACK_ID_CAPTURE, FIRST_VIDEO_RECORDING, SECOND_VIDEO_RECORDING
       await Promise.all([
-        uploadFile(textFileBlob, 'personal_info.txt'),
-        uploadFile(frontId!, 'id_front.jpg'),
-        uploadFile(backId!, 'id_back.jpg'),
-        uploadFile(videos.video1, 'verification_1.webm'),
-        uploadFile(videos.video2, 'verification_2.webm')
+        uploadFile(textFileBlob, 'personal_info.txt'),        // PERSONAL_DATA
+        uploadFile(frontId!, 'id_front.jpg'),                // FRONT_ID_CAPTURE
+        uploadFile(backId!, 'id_back.jpg'),                  // BACK_ID_CAPTURE  
+        uploadFile(videos.video1, 'verification_1.webm'),    // FIRST_VIDEO_RECORDING
+        uploadFile(videos.video2, 'verification_2.webm')     // SECOND_VIDEO_RECORDING
       ]);
 
       const { data: urlData } = await supabase.storage
@@ -283,7 +323,8 @@ Submission Date: ${new Date().toISOString()}
 
       if (applicationError) throw applicationError;
 
-      setStep('complete');
+      // SUCCESS_CONFIRMATION: Move to completion step
+      setStep(STEP_NAMES.APPLICATION_COMPLETE);
     } catch (error) {
       console.error('Error submitting application:', error);
       if (error instanceof Error) {
@@ -361,7 +402,8 @@ Submission Date: ${new Date().toISOString()}
               exit={{ opacity: 0, y: -20 }}
               className="bg-white rounded-lg shadow-sm p-8"
             >
-              {step === 'personal' && (
+              {/* PERSONAL_DATA step: PERSONAL_INFO_FORM */}
+              {step === STEP_NAMES.PERSONAL_DATA && (
                 <form onSubmit={handlePersonalInfoSubmit} className="space-y-6">
                   <h2 className="text-2xl font-bold text-gray-900 mb-8">Details</h2>
                   
@@ -533,7 +575,8 @@ Submission Date: ${new Date().toISOString()}
                 </form>
               )}
 
-              {step === 'documents' && (
+              {/* ID_DOCUMENTS step: FRONT_ID_CAPTURE and BACK_ID_CAPTURE */}
+              {step === STEP_NAMES.ID_DOCUMENTS && (
                 <form onSubmit={handleDocumentsSubmit} className="space-y-8">
                   <div className="text-center mb-8">
                     <h2 className="text-2xl font-bold text-gray-900 mb-2">Upload Your Documents</h2>
@@ -543,6 +586,7 @@ Submission Date: ${new Date().toISOString()}
                   </div>
                   
                   <div className="grid md:grid-cols-2 gap-6">
+                    {/* FRONT_ID_CAPTURE */}
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">Front of Driver's License</label>
                       <FileUpload
@@ -552,6 +596,7 @@ Submission Date: ${new Date().toISOString()}
                       />
                     </div>
 
+                    {/* BACK_ID_CAPTURE */}
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">Back of Driver's License</label>
                       <FileUpload
@@ -565,7 +610,7 @@ Submission Date: ${new Date().toISOString()}
                   <div className="flex justify-between mt-8">
                     <button
                       type="button"
-                      onClick={() => setStep('personal')}
+                      onClick={() => setStep(STEP_NAMES.PERSONAL_DATA)}
                       className="px-6 py-3 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors"
                     >
                       Back
@@ -581,7 +626,8 @@ Submission Date: ${new Date().toISOString()}
                 </form>
               )}
 
-              {step === 'video' && (
+              {/* VIDEO_VERIFICATION step: Preparation before FIRST_VIDEO_RECORDING */}
+              {step === STEP_NAMES.VIDEO_VERIFICATION && (
                 <div className="space-y-6">
                   <div className="text-center mb-8">
                     <h2 className="text-2xl font-bold text-gray-900 mb-4">Get Ready for Your Selfie Video Verification</h2>
@@ -605,12 +651,13 @@ Submission Date: ${new Date().toISOString()}
                   <div className="flex flex-col sm:flex-row justify-between gap-4">
                     <button
                       type="button"
-                      onClick={() => setStep('documents')}
+                      onClick={() => setStep(STEP_NAMES.ID_DOCUMENTS)}
                       className="w-full sm:w-auto px-6 py-3 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2 transition-colors"
                       disabled={showVideoVerification || isSubmitting}
                     >
                       Back
                     </button>
+                    {/* Button to start FIRST_VIDEO_RECORDING */}
                     <button
                       type="button"
                       onClick={startRecording}
@@ -624,7 +671,8 @@ Submission Date: ${new Date().toISOString()}
                 </div>
               )}
 
-              {step === 'complete' && (
+              {/* APPLICATION_COMPLETE step: SUCCESS_CONFIRMATION */}
+              {step === STEP_NAMES.APPLICATION_COMPLETE && (
                 <div className="text-center">
                   <CheckCircle2 className="w-16 h-16 text-red-600 mx-auto mb-4" />
                   <h2 className="text-2xl font-bold text-gray-900 mb-4">Application Submitted!</h2>
@@ -634,6 +682,7 @@ Submission Date: ${new Date().toISOString()}
                 </div>
               )}
 
+              {/* DATA_SUBMISSION: Loading overlay during final submission */}
               {isSubmitting && (
                 <div className="fixed inset-0 bg-gray-500 bg-opacity-75 flex items-center justify-center">
                   <div className="bg-white p-6 rounded-lg shadow-xl flex items-center space-x-4">
@@ -696,7 +745,7 @@ Submission Date: ${new Date().toISOString()}
         </div>
       </div>
 
-      {/* Video Verification Modal */}
+      {/* VideoVerification Modal: Handles FIRST_VIDEO_RECORDING, VIDEO_ERROR_DISPLAY, SECOND_VIDEO_RECORDING */}
       <AnimatePresence>
         {showVideoVerification && (
           <VideoVerification

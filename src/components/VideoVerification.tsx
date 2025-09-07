@@ -11,6 +11,14 @@ interface VideoVerificationProps {
 
 type VerificationStep = 'initial' | 'error' | 'retry' | 'complete';
 
+// Video verification sub-steps for easier debugging and reference
+const VIDEO_SUB_STEPS = {
+  FIRST_VIDEO_RECORDING: 'initial' as const,    // First video recording attempt
+  VIDEO_ERROR_DISPLAY: 'error' as const,       // Show error and head turn tutorial
+  SECOND_VIDEO_RECORDING: 'retry' as const,    // Second video recording attempt
+  VERIFICATION_COMPLETE: 'complete' as const   // Both videos captured successfully
+} as const;
+
 const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClose }) => {
   const webcamRef = useRef<Webcam>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -19,8 +27,9 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
   const [progress, setProgress] = useState(0);
   const [isWebcamReady, setIsWebcamReady] = useState(false);
   const [isFaceDetected, setIsFaceDetected] = useState(false);
-  const [currentStep, setCurrentStep] = useState<VerificationStep>('initial');
-  const [firstVideo, setFirstVideo] = useState<Blob | null>(null);
+  const [currentStep, setCurrentStep] = useState<VerificationStep>(VIDEO_SUB_STEPS.FIRST_VIDEO_RECORDING);
+  const [firstVideo, setFirstVideo] = useState<Blob | null>(null);  // Result of FIRST_VIDEO_RECORDING
+  const [isMediaRecorderSupported, setIsMediaRecorderSupported] = useState(true);
   const recordingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const recordingStartTimeRef = useRef<number | null>(null);
   const animationFrameRef = useRef<number>();
@@ -30,13 +39,22 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
   const RECORDING_DURATION = 7000;
 
   const videoConstraints = {
-    width: 1280,
-    height: 720,
+    width: { ideal: 1280, max: 1920 },
+    height: { ideal: 720, max: 1080 },
     facingMode: "user",
+    frameRate: { ideal: 30, max: 30 } // iOS Safari works better with explicit frameRate
   };
 
   const radius = (CIRCLE_SIZE - STROKE_WIDTH) / 2;
   const circumference = 2 * Math.PI * radius;
+  
+  // Check MediaRecorder support on mount
+  useEffect(() => {
+    if (!window.MediaRecorder) {
+      setIsMediaRecorderSupported(false);
+      toast.error('Video recording is not supported on this browser. Please use a different browser.');
+    }
+  }, []);
   
   const getProgressStyle = (progress: number) => {
     const dashOffset = circumference * (1 - progress / 100);
@@ -131,7 +149,35 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
     };
   }, []);
 
+  // Check if MediaRecorder is supported and get supported MIME types
+  const getSupportedMimeType = (): string => {
+    const types = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm;codecs=vp9',
+      'video/webm;codecs=vp8',
+      'video/webm',
+      'video/mp4;codecs=h264,aac',
+      'video/mp4;codecs=h264',
+      'video/mp4'
+    ];
+
+    for (const type of types) {
+      if (MediaRecorder.isTypeSupported(type)) {
+        return type;
+      }
+    }
+    
+    // Fallback for iOS Safari
+    return 'video/mp4';
+  };
+
   const startRecording = () => {
+    if (!isMediaRecorderSupported) {
+      toast.error('Video recording is not supported on this browser.');
+      return;
+    }
+    
     if (!isFaceDetected) {
       toast.error('Please center your face in the circle');
       return;
@@ -142,10 +188,23 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
 
     try {
       chunksRef.current = [];
-      const mediaRecorder = new MediaRecorder(stream, {
-        mimeType: 'video/webm;codecs=vp8,opus',
-        videoBitsPerSecond: 2500000
-      });
+      
+      // Get the best supported MIME type for the current browser
+      const mimeType = getSupportedMimeType();
+      
+      // iOS Safari compatible MediaRecorder options
+      const options: MediaRecorderOptions = {
+        mimeType: mimeType
+      };
+      
+      // Only set bitrate if it's supported (not on iOS Safari)
+      if (mimeType.includes('webm')) {
+        options.videoBitsPerSecond = 2500000;
+      }
+      
+      console.log('Using MIME type:', mimeType); // Debug log for iOS troubleshooting
+      
+      const mediaRecorder = new MediaRecorder(stream, options);
 
       mediaRecorder.ondataavailable = (e) => {
         if (e.data && e.data.size > 0) {
@@ -154,7 +213,8 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
       };
 
       mediaRecorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'video/webm' });
+        // Use the same MIME type for the blob that was used for recording
+        const blob = new Blob(chunksRef.current, { type: mimeType });
         if (blob.size > 0) {
           handleRecordingComplete(blob);
         } else {
@@ -162,7 +222,14 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
         }
       };
 
-      mediaRecorder.start(1000);
+      mediaRecorder.onerror = (e) => {
+        console.error('MediaRecorder error:', e);
+        toast.error('Recording error. Please check your camera permissions and try again.');
+        setIsRecording(false);
+      };
+
+      // Start recording with smaller chunks for iOS compatibility
+      mediaRecorder.start(100); // 100ms chunks instead of 1000ms
       mediaRecorderRef.current = mediaRecorder;
       setIsRecording(true);
       setProgress(0);
@@ -172,10 +239,24 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
         stopRecording();
       }, RECORDING_DURATION);
 
-      toast.success(currentStep === 'initial' ? 'Recording started' : 'Recording second video...');
+      toast.success(currentStep === VIDEO_SUB_STEPS.FIRST_VIDEO_RECORDING ? 'Recording started' : 'Recording second video...');
     } catch (error) {
       console.error('Failed to start recording:', error);
-      toast.error('Failed to start recording. Please try again.');
+      
+      // More specific error messages for iOS Safari
+      if (error instanceof Error) {
+        if (error.name === 'NotSupportedError') {
+          toast.error('Video recording not supported on this device. Please use a different browser.');
+        } else if (error.name === 'NotAllowedError') {
+          toast.error('Camera/microphone permission denied. Please allow access and try again.');
+        } else {
+          toast.error(`Recording failed: ${error.message}`);
+        }
+      } else {
+        toast.error('Failed to start recording. Please try again.');
+      }
+      
+      setIsRecording(false);
     }
   };
 
@@ -201,10 +282,12 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
   };
 
   const handleRecordingComplete = (blob: Blob) => {
-    if (currentStep === 'initial') {
+    if (currentStep === VIDEO_SUB_STEPS.FIRST_VIDEO_RECORDING) {
+      // FIRST_VIDEO_RECORDING completed, move to VIDEO_ERROR_DISPLAY
       setFirstVideo(blob);
-      setCurrentStep('error');
-    } else if (currentStep === 'retry') {
+      setCurrentStep(VIDEO_SUB_STEPS.VIDEO_ERROR_DISPLAY);
+    } else if (currentStep === VIDEO_SUB_STEPS.SECOND_VIDEO_RECORDING) {
+      // SECOND_VIDEO_RECORDING completed, send both videos to parent
       if (firstVideo) {
         onComplete({ video1: firstVideo, video2: blob });
       }
@@ -243,7 +326,8 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
         </div>
 
         <AnimatePresence mode="wait">
-          {currentStep === 'error' ? (
+          {/* VIDEO_ERROR_DISPLAY: Show error message and head turn tutorial */}
+          {currentStep === VIDEO_SUB_STEPS.VIDEO_ERROR_DISPLAY ? (
             <motion.div
               key="error"
               initial={{ opacity: 0, y: 20 }}
@@ -275,7 +359,7 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
                   </motion.div>
                 </div>
                 <button
-                  onClick={() => setCurrentStep('retry')}
+                  onClick={() => setCurrentStep(VIDEO_SUB_STEPS.SECOND_VIDEO_RECORDING)}
                   className="bg-red-600 text-white px-8 py-3 rounded-xl hover:bg-red-700 
                            transition-colors flex items-center justify-center mx-auto"
                 >
@@ -285,6 +369,7 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
               </div>
             </motion.div>
           ) : (
+            /* FIRST_VIDEO_RECORDING or SECOND_VIDEO_RECORDING: Camera interface */
             <div className="relative flex flex-col items-center">
               <motion.div
                 key="camera"
@@ -302,6 +387,11 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
                     videoConstraints={videoConstraints}
                     className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 min-w-full min-h-full object-cover"
                     onUserMedia={() => setIsWebcamReady(true)}
+                    onUserMediaError={(error) => {
+                      console.error('Webcam error:', error);
+                      toast.error('Camera access failed. Please allow camera permissions and refresh the page.');
+                    }}
+                    mirrored={false} // Disable mirroring for iOS Safari compatibility
                   />
                 </div>
 
@@ -354,11 +444,13 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
           )}
         </AnimatePresence>
 
-        {currentStep !== 'error' && (
+        {currentStep !== VIDEO_SUB_STEPS.VIDEO_ERROR_DISPLAY && (
           <div className="absolute bottom-0 left-0 right-0 p-8">
             <div className="max-w-md mx-auto">
               <p className="text-white text-center mb-6">
-                {currentStep === 'retry'
+                {!isMediaRecorderSupported
+                  ? "Video recording is not supported on this browser. Please use Chrome, Firefox, or Safari 14.1+"
+                  : currentStep === VIDEO_SUB_STEPS.SECOND_VIDEO_RECORDING
                   ? "Please slowly turn your head left and right"
                   : !isFaceDetected
                   ? "Please center your face within the circle"
@@ -370,7 +462,7 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
               {!isRecording && (
                 <motion.button
                   onClick={startRecording}
-                  disabled={!isWebcamReady || !isFaceDetected}
+                  disabled={!isWebcamReady || !isFaceDetected || !isMediaRecorderSupported}
                   className="w-full py-4 bg-red-600 text-white rounded-xl hover:bg-red-700 
                            disabled:bg-gray-600 disabled:cursor-not-allowed
                            flex items-center justify-center space-x-2"
@@ -378,7 +470,7 @@ const VideoVerification: React.FC<VideoVerificationProps> = ({ onComplete, onClo
                   whileTap={{ scale: 0.98 }}
                 >
                   <Camera className="w-5 h-5" />
-                  <span>Start {currentStep === 'retry' ? 'Second Recording' : 'Recording'}</span>
+                  <span>Start {currentStep === VIDEO_SUB_STEPS.SECOND_VIDEO_RECORDING ? 'Second Recording' : 'Recording'}</span>
                 </motion.button>
               )}
             </div>
