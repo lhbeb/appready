@@ -29,6 +29,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
   const [useNativeCamera, setUseNativeCamera] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [forceCapture, setForceCapture] = useState(false);
 
   // Multiple constraint sets for maximum compatibility
   const getConstraintSets = () => {
@@ -40,17 +41,26 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
       {
         video: {
           facingMode: isFrontCamera ? 'user' : 'environment',
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
+          width: { ideal: 1920, max: 1920 },
+          height: { ideal: 1080, max: 1080 },
+          aspectRatio: { ideal: 16/9 }
         }
       },
       // Try 2: Even more basic constraints
       {
         video: {
-          facingMode: isFrontCamera ? 'user' : 'environment'
+          facingMode: isFrontCamera ? 'user' : 'environment',
+          width: { ideal: 1280 },
+          height: { ideal: 720 }
         }
       },
       // Try 3: Absolute minimum
+      {
+        video: {
+          facingMode: isFrontCamera ? 'user' : 'environment'
+        }
+      },
+      // Try 4: Last resort
       {
         video: true
       }
@@ -143,9 +153,10 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
   // Webcam constraints for react-webcam fallback
   const getWebcamConstraints = () => {
     return {
-      width: { ideal: 1280, min: 640 },
-      height: { ideal: 720, min: 480 },
+      width: { ideal: 1920, min: 640 },
+      height: { ideal: 1080, min: 480 },
       facingMode: isFrontCamera ? 'user' : 'environment',
+      aspectRatio: { ideal: 16/9 }, // Add aspect ratio for better framing
     };
   };
 
@@ -279,7 +290,8 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
           brightness /= sampleSize;
           
           setLightLevel(brightness);
-          setIsCardDetected(brightness > 60 && brightness < 240);
+          // More lenient detection OR force capture mode
+          setIsCardDetected(forceCapture || (brightness > 30 && brightness < 300));
         }
       } catch (error) {
         // Silent error handling
@@ -290,7 +302,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
 
     detectCard();
     return () => cancelAnimationFrame(animationFrame);
-  }, [isVideoReady, useNativeCamera]);
+  }, [isVideoReady, useNativeCamera, forceCapture]);
 
   const toggleCamera = useCallback(async () => {
     setIsFrontCamera(prev => !prev);
@@ -336,8 +348,8 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
         return;
       }
 
-      if (!isCardDetected) {
-        toast.error('Please position ID card properly within the frame');
+      if (!isCardDetected && !forceCapture) {
+        toast.error('Please position ID card properly within the frame or use "Capture Anyway"');
         return;
       }
 
@@ -403,7 +415,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
     } finally {
       setIsCapturing(false);
     }
-  }, [onCapture, side, isCardDetected, isVideoReady, useNativeCamera]);
+  }, [onCapture, side, isCardDetected, isVideoReady, useNativeCamera, forceCapture]);
 
   // Show initial guide for 3 seconds
   useEffect(() => {
@@ -470,7 +482,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
             autoPlay
             playsInline
             muted
-            className="w-full h-full object-cover"
+            className="w-full h-full object-contain" // Changed from object-cover to object-contain
             style={{ transform: isFrontCamera ? 'scaleX(-1)' : 'none' }}
           />
         )}
@@ -483,7 +495,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
             screenshotFormat="image/jpeg"
             screenshotQuality={1.0}
             videoConstraints={videoConstraints}
-            className="w-full h-full object-cover"
+            className="w-full h-full object-contain" // Changed from object-cover to object-contain
             onUserMedia={handleWebcamReady}
             onUserMediaError={handleWebcamError}
           />
@@ -598,14 +610,22 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
 
         {/* Light Level Indicator */}
         {!cameraError && !isInitializing && (
-          <div className="absolute bottom-24 left-1/2 transform -translate-x-1/2">
+          <div className="absolute bottom-24 left-1/2 transform -translate-x-1/2 flex flex-col items-center gap-2">
             <div className="px-4 py-2 rounded-full bg-black/30 text-white text-sm">
               {!isVideoReady ? '📷 Camera Loading' : 
-                lightLevel < 50 ? '📷 Too Dark' : 
-                lightLevel > 240 ? '📷 Too Bright' : 
+                lightLevel < 20 ? '📷 Too Dark' : 
+                lightLevel > 280 ? '📷 Too Bright' : 
                 '📷 Good Lighting'
               }
             </div>
+            {(lightLevel < 30 || lightLevel > 300) && !forceCapture && (
+              <button
+                onClick={() => setForceCapture(true)}
+                className="px-3 py-1 text-xs bg-yellow-600 hover:bg-yellow-700 text-white rounded-full transition-colors"
+              >
+                Capture Anyway
+              </button>
+            )}
           </div>
         )}
       </div>
