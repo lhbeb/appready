@@ -593,9 +593,10 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
           
           if (import.meta.env.DEV) {
             console.log(`=== ${side.toUpperCase()} NATIVE CAPTURE (FORCED 16:9) ===`);
-            console.log(`Video dimensions: ${videoWidth}x${videoHeight} (${videoAspectRatio.toFixed(3)})`);
+            console.log(`Video preview: ${videoWidth}x${videoHeight} (${videoAspectRatio.toFixed(3)}) - FULL VIEW`);
             console.log(`Crop area: ${cropWidth.toFixed(0)}x${cropHeight.toFixed(0)} at (${cropX.toFixed(0)}, ${cropY.toFixed(0)})`);
-            console.log(`Output: ${outputWidth}x${outputHeight} (${(outputWidth/outputHeight).toFixed(3)})`);
+            console.log(`Output: ${outputWidth}x${outputHeight} (${(outputWidth/outputHeight).toFixed(3)}) - 16:9 ENFORCED`);
+            console.log('Preview shows full camera, capture is cropped to 16:9');
           }
         }
       } else {
@@ -821,8 +822,8 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
             className="w-full h-full"
             style={{ 
               transform: isFrontCamera ? 'scaleX(-1)' : 'none',
-              objectFit: 'cover', // Cover to fill 16:9 container
-              aspectRatio: '16/9', // Force 16:9 display
+              objectFit: 'contain', // Show full camera view without cropping
+              aspectRatio: 'unset', // Let camera use natural ratio for preview
               maxWidth: '100%',
               maxHeight: '100%'
             }}
@@ -839,8 +840,8 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
             videoConstraints={videoConstraints}
             className="w-full h-full"
             style={{ 
-              objectFit: 'cover', // Cover to fill 16:9 container
-              aspectRatio: '16/9', // Force 16:9 display
+              objectFit: 'contain', // Show full camera view without cropping
+              aspectRatio: 'unset', // Let camera use natural ratio for preview
               maxWidth: '100%',
               maxHeight: '100%'
             }}
@@ -852,7 +853,7 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
         {/* Hidden canvas for native camera capture */}
         <canvas ref={canvasRef} className="hidden" />
 
-        {/* ID Card Frame */}
+        {/* ID Card Frame with 16:9 Capture Preview */}
         <div className="absolute inset-0 flex items-center justify-center">
           <motion.div
             ref={frameRef}
@@ -860,6 +861,13 @@ const CameraCapture: React.FC<CameraCaptureProps> = ({ onCapture, onClose, side 
               isCardDetected ? 'border-green-500' : 'border-white'
             } rounded-lg transition-colors duration-300`}
           >
+            {/* 16:9 Capture Area Indicator */}
+            <div className="absolute inset-2 border border-blue-400 border-dashed rounded opacity-60">
+              <div className="absolute -top-6 left-0 text-blue-400 text-xs font-medium">
+                16:9 Capture Area
+              </div>
+            </div>
+            
             {/* Corner Markers */}
             <div className={`absolute top-0 left-0 w-8 h-8 border-l-2 border-t-2 ${
               isCardDetected ? 'border-green-500' : 'border-white'
